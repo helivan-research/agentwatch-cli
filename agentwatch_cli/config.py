@@ -28,8 +28,8 @@ class ConnectorConfig:
     # AgentWatch cloud URL
     agentwatch_url: str = "wss://agentwatch.helivan.io"
 
-    # Local Moltbot gateway configuration
-    gateway_url: str = "http://127.0.0.1:18789"
+    # Local OpenClaw gateway configuration (WebSocket)
+    gateway_url: str = "ws://127.0.0.1:18789"
     gateway_token: Optional[str] = None
 
     def is_enrolled(self) -> bool:
