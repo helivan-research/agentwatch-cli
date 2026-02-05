@@ -5,11 +5,53 @@ CLI entry point for agentwatch-cli.
 import argparse
 import asyncio
 import json
+import os
+import shutil
+import stat
 import sys
 from pathlib import Path
 from typing import Optional
 
 import httpx
+
+
+def fix_script_permissions() -> bool:
+    """
+    Find and fix permissions on the agentwatch-cli script.
+
+    Returns:
+        True if permissions were fixed, False otherwise.
+    """
+    # Find the script location
+    script_path = shutil.which("agentwatch-cli")
+
+    if not script_path:
+        # Try common locations
+        possible_paths = [
+            Path.home() / ".local" / "bin" / "agentwatch-cli",
+            Path.home() / "Library" / "Python" / "3.9" / "bin" / "agentwatch-cli",
+            Path.home() / "Library" / "Python" / "3.10" / "bin" / "agentwatch-cli",
+            Path.home() / "Library" / "Python" / "3.11" / "bin" / "agentwatch-cli",
+            Path.home() / "Library" / "Python" / "3.12" / "bin" / "agentwatch-cli",
+        ]
+        for path in possible_paths:
+            if path.exists():
+                script_path = str(path)
+                break
+
+    if not script_path:
+        return False
+
+    try:
+        path = Path(script_path)
+        # Add execute permission for owner, group, and others
+        current_mode = path.stat().st_mode
+        new_mode = current_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+        path.chmod(new_mode)
+        return True
+    except Exception as e:
+        print(f"Warning: Could not fix script permissions: {e}")
+        return False
 
 from .config import (
     ConnectorConfig,
@@ -153,6 +195,10 @@ def enroll_command(args: argparse.Namespace) -> int:
         # Save config
         save_config(config)
 
+        # Fix script permissions (needed for pipx on macOS)
+        if fix_script_permissions():
+            print("Fixed script permissions")
+
         # Enable OpenClaw HTTP endpoint
         if ensure_openclaw_http_enabled():
             print("Enabled OpenClaw HTTP chat completions endpoint")
@@ -167,11 +213,11 @@ def enroll_command(args: argparse.Namespace) -> int:
         print()
         print("To start the connector, run:")
         print()
-        print("  python -m agentwatch_cli start")
+        print("  agentwatch-cli start")
         print()
         print("Or install as a background service:")
         print()
-        print("  python -m agentwatch_cli install-service")
+        print("  agentwatch-cli install-service")
         print()
 
         return 0
