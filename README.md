@@ -158,7 +158,7 @@ Configuration is stored in `~/.agentwatch-cli/config.json`:
   "agent_name": "My Moltbot",
   "gateway_url": "http://127.0.0.1:18789",
   "gateway_token": null,
-  "agentwatch_url": "wss://connector.agentwatch.io"
+  "agentwatch_url": "wss://agentwatch.helivan.io"
 }
 ```
 

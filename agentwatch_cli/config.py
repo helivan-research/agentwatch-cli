@@ -26,7 +26,7 @@ class ConnectorConfig:
     agent_name: Optional[str] = None
 
     # AgentWatch cloud URL
-    agentwatch_url: str = "wss://connector.agentwatch.io"
+    agentwatch_url: str = "wss://agentwatch.helivan.io"
 
     # Local Moltbot gateway configuration
     gateway_url: str = "http://127.0.0.1:18789"
