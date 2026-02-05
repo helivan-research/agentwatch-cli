@@ -29,7 +29,8 @@ setup(
     python_requires=">=3.9",
     install_requires=[
         "httpx>=0.24.0",
-        "python-socketio[asyncio_client]>=5.8.0",
+        "python-socketio>=5.8.0",
+        "websockets>=12.0,<15.1",
     ],
     entry_points={
         "console_scripts": [

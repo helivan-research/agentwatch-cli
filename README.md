@@ -1,5 +1,9 @@
 # agentwatch-cli
 
+[![PyPI version](https://badge.fury.io/py/agentwatch-cli.svg)](https://badge.fury.io/py/agentwatch-cli)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 Connect your local Moltbot (OpenClaw) gateway to AgentWatch cloud without exposing your local network.
 
 ## Overview
@@ -11,6 +15,12 @@ Connect your local Moltbot (OpenClaw) gateway to AgentWatch cloud without exposi
 AgentWatch Cloud <---> agentwatch-cli <---> Local Moltbot Gateway
       (cloud)         (your machine)           (your machine)
 ```
+
+## Requirements
+
+- Python 3.9 or higher
+- A running Moltbot (OpenClaw) gateway on your local machine
+- An AgentWatch account
 
 ## Installation
 
@@ -98,6 +108,9 @@ agentwatch-cli config --gateway-url http://192.168.1.100:18789
 
 # Set gateway token
 agentwatch-cli config --gateway-token your-token-here
+
+# Set AgentWatch cloud URL (for self-hosted deployments)
+agentwatch-cli config --agentwatch-url wss://your-agentwatch-instance.com
 ```
 
 ### revoke
