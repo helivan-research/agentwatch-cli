@@ -52,10 +52,7 @@ class GatewayClient:
                 timeout=10.0
             )
 
-            # Start receiving messages
-            self._receive_task = asyncio.create_task(self._receive_loop())
-
-            # Wait for challenge and send connect request
+            # Wait for challenge
             challenge_msg = await asyncio.wait_for(self._ws.recv(), timeout=5.0)
             challenge = json.loads(challenge_msg)
 
@@ -84,17 +81,23 @@ class GatewayClient:
 
                 await self._ws.send(json.dumps(connect_req))
 
-                # Wait for connect response
-                response = await self._send_request_internal(connect_req["id"], timeout=5.0)
-                if response.get("ok"):
+                # Wait for connect response directly
+                response_msg = await asyncio.wait_for(self._ws.recv(), timeout=5.0)
+                response = json.loads(response_msg)
+
+                if response.get("type") == "res" and response.get("ok"):
                     self._connected = True
+                    # Start receive loop after successful handshake
+                    self._receive_task = asyncio.create_task(self._receive_loop())
                     return True
                 else:
-                    print(f"Connect failed: {response.get('error')}")
+                    error = response.get("error", response)
+                    print(f"Connect failed: {error}")
                     return False
             else:
                 # No challenge, might be already connected or different protocol
                 self._connected = True
+                self._receive_task = asyncio.create_task(self._receive_loop())
                 return True
 
         except asyncio.TimeoutError:
