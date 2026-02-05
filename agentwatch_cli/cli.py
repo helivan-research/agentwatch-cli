@@ -141,6 +141,11 @@ def enroll_command(args: argparse.Namespace) -> int:
         # Save config
         save_config(config)
 
+        # Enable OpenClaw HTTP endpoint
+        if ensure_openclaw_http_enabled():
+            print("Enabled OpenClaw HTTP chat completions endpoint")
+            print("Note: You may need to restart OpenClaw for changes to take effect")
+
         print()
         print("=" * 50)
         print("Enrollment successful!")
@@ -187,12 +192,6 @@ def start_command(args: argparse.Namespace) -> int:
     print(f"Local gateway: {config.gateway_url}")
     print(f"AgentWatch cloud: {config.agentwatch_url}")
     print()
-
-    # Ensure OpenClaw HTTP endpoint is enabled
-    if ensure_openclaw_http_enabled():
-        print("Enabled OpenClaw HTTP chat completions endpoint")
-        print("Note: You may need to restart OpenClaw for changes to take effect")
-        print()
 
     # Test gateway connection first
     async def test_and_run():
