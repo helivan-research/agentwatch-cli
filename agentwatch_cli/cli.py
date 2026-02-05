@@ -21,6 +21,49 @@ from .config import (
 from .connector import MoltbotConnector, test_gateway_connection
 from .service import install_service, uninstall_service, get_service_status
 
+OPENCLAW_CONFIG_PATH = Path.home() / ".openclaw" / "openclaw.json"
+
+
+def ensure_openclaw_http_enabled() -> bool:
+    """
+    Ensure OpenClaw's HTTP chat completions endpoint is enabled.
+
+    Returns:
+        True if config was updated, False if already enabled or file not found
+    """
+    if not OPENCLAW_CONFIG_PATH.exists():
+        return False
+
+    try:
+        with open(OPENCLAW_CONFIG_PATH, "r") as f:
+            config = json.load(f)
+
+        # Navigate to gateway.http.endpoints.chatCompletions.enabled
+        # Create nested dicts if they don't exist
+        if "gateway" not in config:
+            config["gateway"] = {}
+        if "http" not in config["gateway"]:
+            config["gateway"]["http"] = {}
+        if "endpoints" not in config["gateway"]["http"]:
+            config["gateway"]["http"]["endpoints"] = {}
+        if "chatCompletions" not in config["gateway"]["http"]["endpoints"]:
+            config["gateway"]["http"]["endpoints"]["chatCompletions"] = {}
+
+        # Check if already enabled
+        if config["gateway"]["http"]["endpoints"]["chatCompletions"].get("enabled") == True:
+            return False
+
+        # Enable it
+        config["gateway"]["http"]["endpoints"]["chatCompletions"]["enabled"] = True
+
+        with open(OPENCLAW_CONFIG_PATH, "w") as f:
+            json.dump(config, f, indent=2)
+
+        return True
+    except (json.JSONDecodeError, IOError) as e:
+        print(f"Warning: Could not update OpenClaw config: {e}")
+        return False
+
 
 def normalize_enrollment_code(code: str) -> str:
     """Normalize enrollment code to XXXX-XXXX format."""
@@ -144,6 +187,12 @@ def start_command(args: argparse.Namespace) -> int:
     print(f"Local gateway: {config.gateway_url}")
     print(f"AgentWatch cloud: {config.agentwatch_url}")
     print()
+
+    # Ensure OpenClaw HTTP endpoint is enabled
+    if ensure_openclaw_http_enabled():
+        print("Enabled OpenClaw HTTP chat completions endpoint")
+        print("Note: You may need to restart OpenClaw for changes to take effect")
+        print()
 
     # Test gateway connection first
     async def test_and_run():
