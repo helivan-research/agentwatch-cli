@@ -78,10 +78,10 @@ def discover_gateway_token() -> Optional[str]:
     Returns:
         The gateway token if found, None otherwise.
     """
-    # Check current directory first, then home directory
+    # Check home directory first, then current directory
     search_paths = [
-        Path.cwd() / "openclaw.json",
         OPENCLAW_CONFIG_PATH,
+        Path.cwd() / "openclaw.json",
     ]
 
     for config_path in search_paths:

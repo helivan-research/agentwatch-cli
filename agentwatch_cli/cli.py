@@ -24,10 +24,10 @@ from .service import install_service, uninstall_service, get_service_status
 
 def find_openclaw_config() -> Optional[Path]:
     """Find the OpenClaw config file."""
-    # Check current directory first, then home directory
+    # Check home directory first, then current directory
     search_paths = [
-        Path.cwd() / "openclaw.json",
         Path.home() / ".openclaw" / "openclaw.json",
+        Path.cwd() / "openclaw.json",
     ]
     for path in search_paths:
         if path.exists():
