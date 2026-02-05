@@ -77,7 +77,7 @@ class GatewayClient:
                 }
 
                 if self.token:
-                    connect_req["params"]["auth"] = {"token": self.token}
+                    connect_req["params"]["auth"] = {"password": self.token}
 
                 await self._ws.send(json.dumps(connect_req))
 
