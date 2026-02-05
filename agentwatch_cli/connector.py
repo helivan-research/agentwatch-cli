@@ -30,7 +30,7 @@ def compute_hmac_signature(secret: str, challenge: str, timestamp: int) -> str:
     """
     message = f"{challenge}:{timestamp}"
     signature = hmac.new(
-        secret.encode('utf-8'),
+        bytes.fromhex(secret),
         message.encode('utf-8'),
         hashlib.sha256
     ).hexdigest()
@@ -191,7 +191,7 @@ class MoltbotConnector:
             return
 
         if self.pending_challenge and self.config.secret:
-            # Use HMAC-based authentication (preferred)
+            # Use HMAC-based authentication
             timestamp = int(time.time() * 1000)
             signature = compute_hmac_signature(
                 self.config.secret,
@@ -205,6 +205,7 @@ class MoltbotConnector:
                 "challenge": self.pending_challenge,
                 "timestamp": timestamp,
                 "signature": signature,
+                "secret": self.config.secret,
             }
             self._log("Authenticating with HMAC signature")
         else:
