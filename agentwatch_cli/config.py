@@ -69,27 +69,41 @@ def save_config(config: ConnectorConfig, config_path: Optional[Path] = None) -> 
 
 def discover_gateway_token() -> Optional[str]:
     """
-    Auto-discover gateway token from ~/.openclaw/openclaw.json.
+    Auto-discover gateway token from openclaw.json.
+
+    Checks in order:
+    1. Current directory: ./openclaw.json
+    2. Home directory: ~/.openclaw/openclaw.json
 
     Returns:
         The gateway token if found, None otherwise.
     """
-    if not OPENCLAW_CONFIG_PATH.exists():
-        return None
+    # Check current directory first, then home directory
+    search_paths = [
+        Path.cwd() / "openclaw.json",
+        OPENCLAW_CONFIG_PATH,
+    ]
 
-    try:
-        with open(OPENCLAW_CONFIG_PATH, "r") as f:
-            openclaw_config = json.load(f)
+    for config_path in search_paths:
+        if not config_path.exists():
+            continue
 
-        # Navigate to gateway.auth.token
-        token = (
-            openclaw_config.get("gateway", {})
-            .get("auth", {})
-            .get("token")
-        )
-        return token
-    except (json.JSONDecodeError, KeyError, TypeError):
-        return None
+        try:
+            with open(config_path, "r") as f:
+                openclaw_config = json.load(f)
+
+            # Navigate to gateway.auth.token
+            token = (
+                openclaw_config.get("gateway", {})
+                .get("auth", {})
+                .get("token")
+            )
+            if token:
+                return token
+        except (json.JSONDecodeError, KeyError, TypeError):
+            continue
+
+    return None
 
 
 def get_effective_gateway_token(config: ConnectorConfig) -> Optional[str]:

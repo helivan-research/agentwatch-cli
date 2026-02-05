@@ -7,6 +7,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
+from typing import Optional
 
 import httpx
 
@@ -21,7 +22,17 @@ from .config import (
 from .connector import MoltbotConnector, test_gateway_connection
 from .service import install_service, uninstall_service, get_service_status
 
-OPENCLAW_CONFIG_PATH = Path.home() / ".openclaw" / "openclaw.json"
+def find_openclaw_config() -> Optional[Path]:
+    """Find the OpenClaw config file."""
+    # Check current directory first, then home directory
+    search_paths = [
+        Path.cwd() / "openclaw.json",
+        Path.home() / ".openclaw" / "openclaw.json",
+    ]
+    for path in search_paths:
+        if path.exists():
+            return path
+    return None
 
 
 def ensure_openclaw_http_enabled() -> bool:
@@ -31,11 +42,12 @@ def ensure_openclaw_http_enabled() -> bool:
     Returns:
         True if config was updated, False if already enabled or file not found
     """
-    if not OPENCLAW_CONFIG_PATH.exists():
+    config_path = find_openclaw_config()
+    if not config_path:
         return False
 
     try:
-        with open(OPENCLAW_CONFIG_PATH, "r") as f:
+        with open(config_path, "r") as f:
             config = json.load(f)
 
         # Navigate to gateway.http.endpoints.chatCompletions.enabled
@@ -56,7 +68,7 @@ def ensure_openclaw_http_enabled() -> bool:
         # Enable it
         config["gateway"]["http"]["endpoints"]["chatCompletions"]["enabled"] = True
 
-        with open(OPENCLAW_CONFIG_PATH, "w") as f:
+        with open(config_path, "w") as f:
             json.dump(config, f, indent=2)
 
         return True
