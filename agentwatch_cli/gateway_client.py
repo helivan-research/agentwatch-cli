@@ -69,8 +69,8 @@ class GatewayClient:
                         "minProtocol": 3,
                         "maxProtocol": 3,
                         "client": {
-                            "id": "operator",
-                            "mode": "operator",
+                            "id": "gateway-client",
+                            "mode": "backend",
                             "version": "0.1.0",
                             "platform": "python"
                         },
