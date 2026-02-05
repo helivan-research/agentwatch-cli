@@ -32,9 +32,9 @@ dependencies = [
 agentwatch-cli = "agentwatch_cli.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/agentwatch/agentwatch-cli"
+Homepage = "https://github.com/helivan-research/agentwatch-cli"
 Documentation = "https://docs.agentwatch.io/agentwatch-cli"
-Repository = "https://github.com/agentwatch/agentwatch-cli"
+Repository = "https://github.com/helivan-research/agentwatch-cli"
 
 [tool.setuptools.packages.find]
 include = ["agentwatch_cli*"]

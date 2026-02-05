@@ -13,7 +13,7 @@ setup(
     description="Connect your local Moltbot gateway to AgentWatch cloud",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/agentwatch/agentwatch-cli",
+    url="https://github.com/helivan-research/agentwatch-cli",
     packages=find_packages(),
     classifiers=[
         "Development Status :: 4 - Beta",
