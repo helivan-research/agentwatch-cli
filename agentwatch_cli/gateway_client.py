@@ -70,7 +70,7 @@ class GatewayClient:
                         "maxProtocol": 3,
                         "client": {
                             "id": f"agentwatch-cli-{uuid.uuid4().hex[:8]}",
-                            "name": "agentwatch-cli",
+                            "mode": "operator",
                             "version": "0.1.0",
                             "platform": "python"
                         },
