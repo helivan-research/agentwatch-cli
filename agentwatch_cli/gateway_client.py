@@ -54,9 +54,11 @@ class GatewayClient:
 
             # Wait for challenge
             challenge_msg = await asyncio.wait_for(self._ws.recv(), timeout=5.0)
+            print(f"[DEBUG] Received: {challenge_msg}")
             challenge = json.loads(challenge_msg)
 
             if challenge.get("type") == "event" and challenge.get("event") == "connect.challenge":
+                print("[DEBUG] Got connect.challenge, sending connect request...")
                 # Send connect request
                 connect_req = {
                     "type": "req",
@@ -84,6 +86,7 @@ class GatewayClient:
 
                 # Wait for connect response directly
                 response_msg = await asyncio.wait_for(self._ws.recv(), timeout=5.0)
+                print(f"[DEBUG] Response: {response_msg}")
                 response = json.loads(response_msg)
 
                 if response.get("type") == "res" and response.get("ok"):
