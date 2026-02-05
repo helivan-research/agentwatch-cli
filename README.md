@@ -35,16 +35,26 @@ This will:
 - Auto-discover your gateway token from `~/.openclaw/openclaw.json`
 - Save configuration to `~/.agentwatch-cli/config.json`
 
-### 3. Start the connector
+### 3. Install as a service (recommended)
+
+```bash
+# Linux (requires sudo)
+sudo agentwatch-cli install-service
+
+# macOS
+agentwatch-cli install-service
+```
+
+That's it! The connector will now:
+- Start automatically on boot
+- Run in the background
+- Reconnect automatically if disconnected
+
+### Alternative: Run manually
 
 ```bash
 agentwatch-cli start
 ```
-
-The connector will:
-- Connect to your local Moltbot gateway (default: `http://127.0.0.1:18789`)
-- Establish a secure WebSocket connection to AgentWatch cloud
-- Relay messages between AgentWatch and your local gateway
 
 ## Commands
 
@@ -101,6 +111,41 @@ agentwatch-cli revoke
 agentwatch-cli revoke --force
 ```
 
+### install-service
+
+Install as a system service for automatic startup.
+
+```bash
+# Linux (requires sudo)
+sudo agentwatch-cli install-service
+
+# macOS (no sudo needed)
+agentwatch-cli install-service
+
+# Specify user (Linux only)
+sudo agentwatch-cli install-service --user myuser
+```
+
+### uninstall-service
+
+Remove the system service.
+
+```bash
+# Linux
+sudo agentwatch-cli uninstall-service
+
+# macOS
+agentwatch-cli uninstall-service
+```
+
+### service-status
+
+Check if the service is running.
+
+```bash
+agentwatch-cli service-status
+```
+
 ## Configuration
 
 Configuration is stored in `~/.agentwatch-cli/config.json`:
@@ -134,63 +179,6 @@ If `gateway_token` is `null`, the connector automatically looks for the token in
 ## Environment Variables
 
 - `AGENTWATCH_ENROLLMENT_URL`: Override the enrollment API URL (for testing)
-
-## Running as a Service
-
-### systemd (Linux)
-
-Create `/etc/systemd/system/agentwatch-cli.service`:
-
-```ini
-[Unit]
-Description=AgentWatch CLI Connector
-After=network.target
-
-[Service]
-Type=simple
-User=your-username
-ExecStart=/usr/local/bin/agentwatch-cli start
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Then:
-```bash
-sudo systemctl enable agentwatch-cli
-sudo systemctl start agentwatch-cli
-```
-
-### launchd (macOS)
-
-Create `~/Library/LaunchAgents/io.agentwatch.agentwatch-cli.plist`:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>io.agentwatch.agentwatch-cli</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>/usr/local/bin/agentwatch-cli</string>
-        <string>start</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <true/>
-</dict>
-</plist>
-```
-
-Then:
-```bash
-launchctl load ~/Library/LaunchAgents/io.agentwatch.agentwatch-cli.plist
-```
 
 ## Security
 

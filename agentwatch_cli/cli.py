@@ -19,6 +19,7 @@ from .config import (
     DEFAULT_CONFIG_FILE,
 )
 from .connector import MoltbotConnector, test_gateway_connection
+from .service import install_service, uninstall_service, get_service_status
 
 
 def enroll_command(args: argparse.Namespace) -> int:
@@ -85,8 +86,12 @@ def enroll_command(args: argparse.Namespace) -> int:
         print(f"Config saved to: {DEFAULT_CONFIG_FILE}")
         print()
         print("Next steps:")
-        print("  1. Make sure your Moltbot gateway is running")
-        print("  2. Run: agentwatch-cli start")
+        print("  1. Install as a service (recommended):")
+        print("     sudo agentwatch-cli install-service   # Linux")
+        print("     agentwatch-cli install-service        # macOS")
+        print()
+        print("  Or run manually:")
+        print("     agentwatch-cli start")
         print()
 
         return 0
@@ -246,6 +251,45 @@ def revoke_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def install_service_command(args: argparse.Namespace) -> int:
+    """Handle the install-service command."""
+    config = load_config()
+
+    if not config.is_enrolled():
+        print("Error: Connector is not enrolled.")
+        print("Please run 'agentwatch-cli enroll --code <CODE>' first.")
+        return 1
+
+    print("Installing agentwatch-cli as a system service...")
+    print()
+
+    success, message = install_service(user=getattr(args, 'user', None))
+
+    print(message)
+    return 0 if success else 1
+
+
+def uninstall_service_command(args: argparse.Namespace) -> int:
+    """Handle the uninstall-service command."""
+    print("Uninstalling agentwatch-cli service...")
+
+    success, message = uninstall_service()
+
+    print(message)
+    return 0 if success else 1
+
+
+def service_status_command(args: argparse.Namespace) -> int:
+    """Handle the service-status command."""
+    is_running, message = get_service_status()
+
+    print("AgentWatch CLI Service Status")
+    print("=" * 40)
+    print(message)
+
+    return 0
+
+
 def main() -> int:
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -304,6 +348,24 @@ def main() -> int:
         "--force", "-f", action="store_true", help="Skip confirmation"
     )
 
+    # install-service command
+    install_service_parser = subparsers.add_parser(
+        "install-service", help="Install as a system service (auto-start on boot)"
+    )
+    install_service_parser.add_argument(
+        "--user", help="User to run the service as (Linux only, default: current user)"
+    )
+
+    # uninstall-service command
+    subparsers.add_parser(
+        "uninstall-service", help="Uninstall the system service"
+    )
+
+    # service-status command
+    subparsers.add_parser(
+        "service-status", help="Check the system service status"
+    )
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -317,6 +379,9 @@ def main() -> int:
         "status": status_command,
         "config": config_command,
         "revoke": revoke_command,
+        "install-service": install_service_command,
+        "uninstall-service": uninstall_service_command,
+        "service-status": service_status_command,
     }
 
     handler = handlers.get(args.command)
