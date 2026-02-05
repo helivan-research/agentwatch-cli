@@ -81,7 +81,9 @@ class GatewayClient:
                 if self.token:
                     connect_req["params"]["auth"] = {"token": self.token}
 
-                print(f"[DEBUG] Sending connect request: {json.dumps(connect_req, indent=2)}")
+                print(f"[DEBUG] Token present: {bool(self.token)}")
+                print(f"[DEBUG] Full connect_req:")
+                print(json.dumps(connect_req, indent=2))
                 await self._ws.send(json.dumps(connect_req))
 
                 # Wait for connect response directly
