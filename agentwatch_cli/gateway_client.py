@@ -69,8 +69,10 @@ class GatewayClient:
                         "minProtocol": 3,
                         "maxProtocol": 3,
                         "client": {
+                            "id": f"agentwatch-cli-{uuid.uuid4().hex[:8]}",
                             "name": "agentwatch-cli",
-                            "version": "0.1.0"
+                            "version": "0.1.0",
+                            "platform": "python"
                         },
                         "role": "operator",
                         "scopes": ["operator.read", "operator.write"],
