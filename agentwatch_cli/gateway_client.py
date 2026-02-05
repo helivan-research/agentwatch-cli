@@ -77,7 +77,7 @@ class GatewayClient:
                 }
 
                 if self.token:
-                    connect_req["params"]["auth"] = {"password": self.token}
+                    connect_req["params"]["auth"] = {"token": self.token}
 
                 await self._ws.send(json.dumps(connect_req))
 
@@ -170,7 +170,7 @@ class GatewayClient:
 
         # Include auth if token available
         if include_auth and self.token:
-            request["params"]["auth"] = {"password": self.token}
+            request["params"]["auth"] = {"token": self.token}
 
         # Create future before sending
         future: asyncio.Future = asyncio.get_event_loop().create_future()
