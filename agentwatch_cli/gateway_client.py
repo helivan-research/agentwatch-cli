@@ -69,7 +69,7 @@ class GatewayClient:
                         "minProtocol": 3,
                         "maxProtocol": 3,
                         "client": {
-                            "id": "cli",
+                            "id": "operator",
                             "mode": "operator",
                             "version": "0.1.0",
                             "platform": "python"
