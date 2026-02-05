@@ -22,9 +22,18 @@ from .connector import MoltbotConnector, test_gateway_connection
 from .service import install_service, uninstall_service, get_service_status
 
 
+def normalize_enrollment_code(code: str) -> str:
+    """Normalize enrollment code to XXXX-XXXX format."""
+    # Remove any dashes and whitespace, uppercase
+    clean = code.replace("-", "").replace(" ", "").upper()
+    if len(clean) == 8:
+        return f"{clean[:4]}-{clean[4:]}"
+    return code.upper()
+
+
 def enroll_command(args: argparse.Namespace) -> int:
     """Handle the enroll command."""
-    enrollment_code = args.code
+    enrollment_code = normalize_enrollment_code(args.code)
 
     print(f"Enrolling with code: {enrollment_code}")
 
@@ -47,6 +56,17 @@ def enroll_command(args: argparse.Namespace) -> int:
                 enrollment_url,
                 json={"enrollment_code": enrollment_code},
             )
+
+            if response.status_code == 429:
+                # Rate limited
+                try:
+                    error_data = response.json()
+                    retry_after = error_data.get('retry_after', 900)
+                    print(f"Rate limited: Too many enrollment attempts.")
+                    print(f"Please try again in {retry_after // 60} minutes.")
+                except json.JSONDecodeError:
+                    print("Rate limited: Too many enrollment attempts. Please try again later.")
+                return 1
 
             if response.status_code != 200:
                 try:

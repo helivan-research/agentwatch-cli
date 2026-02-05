@@ -3,13 +3,38 @@ Main connector class that bridges AgentWatch cloud to local Moltbot gateway.
 """
 
 import asyncio
-import json
+import hashlib
+import hmac
 import time
 from typing import Dict, Any, Optional, Callable
 import socketio
 
 from .config import ConnectorConfig, get_effective_gateway_token
 from .gateway_client import GatewayClient
+
+
+def compute_hmac_signature(secret: str, challenge: str, timestamp: int) -> str:
+    """
+    Compute HMAC-SHA256 signature for authentication.
+
+    The server will verify this signature to authenticate without
+    the secret being sent over the wire.
+
+    Args:
+        secret: The connector secret (stored hash from enrollment)
+        challenge: The challenge nonce from the server
+        timestamp: Current timestamp in milliseconds
+
+    Returns:
+        Hex-encoded HMAC signature
+    """
+    message = f"{challenge}:{timestamp}"
+    signature = hmac.new(
+        secret.encode('utf-8'),
+        message.encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()
+    return signature
 
 
 class MoltbotConnector:
@@ -42,6 +67,10 @@ class MoltbotConnector:
         # Heartbeat
         self.heartbeat_interval = 30  # seconds
         self.heartbeat_task: Optional[asyncio.Task] = None
+
+        # Authentication challenge (received from server)
+        self.pending_challenge: Optional[str] = None
+        self.challenge_expires_at: Optional[int] = None
 
     def _log(self, message: str, level: str = "info") -> None:
         """Log a message with timestamp."""
@@ -97,8 +126,7 @@ class MoltbotConnector:
                 transports=["websocket", "polling"],
             )
 
-            # Send authentication
-            await self._authenticate()
+            # Authentication will happen when we receive the challenge event
 
             return True
         except Exception as e:
@@ -110,11 +138,20 @@ class MoltbotConnector:
         if not self.sio:
             return
 
+        @self.sio.on("challenge")
+        async def on_challenge(data: Dict[str, Any]):
+            """Handle authentication challenge from server."""
+            self.pending_challenge = data.get("challenge")
+            self.challenge_expires_at = data.get("expires_at")
+            self._log("Received authentication challenge")
+            # Authenticate with HMAC
+            await self._authenticate()
+
         @self.sio.event
         async def connect():
             self._log("Connected to AgentWatch cloud")
             self.reconnect_attempts = 0
-            await self._authenticate()
+            # Don't authenticate here - wait for challenge
 
         @self.sio.event
         async def disconnect():
@@ -149,16 +186,41 @@ class MoltbotConnector:
             await self._send_heartbeat()
 
     async def _authenticate(self) -> None:
-        """Send authentication message to cloud."""
+        """Send authentication message to cloud using HMAC."""
         if not self.sio:
             return
 
-        auth_message = {
-            "type": "auth",
-            "connector_id": self.config.connector_id,
-            "secret": self.config.secret,
-        }
+        if self.pending_challenge and self.config.secret:
+            # Use HMAC-based authentication (preferred)
+            timestamp = int(time.time() * 1000)
+            signature = compute_hmac_signature(
+                self.config.secret,
+                self.pending_challenge,
+                timestamp
+            )
+
+            auth_message = {
+                "type": "auth",
+                "connector_id": self.config.connector_id,
+                "challenge": self.pending_challenge,
+                "timestamp": timestamp,
+                "signature": signature,
+            }
+            self._log("Authenticating with HMAC signature")
+        else:
+            # Fall back to legacy auth (for backwards compatibility)
+            self._log("Warning: Using legacy authentication (no challenge received)", "warn")
+            auth_message = {
+                "type": "auth",
+                "connector_id": self.config.connector_id,
+                "secret": self.config.secret,
+            }
+
         await self.sio.emit("auth", auth_message)
+
+        # Clear the challenge after use
+        self.pending_challenge = None
+        self.challenge_expires_at = None
 
     async def _start_heartbeat(self) -> None:
         """Start the heartbeat task."""
