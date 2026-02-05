@@ -167,11 +167,11 @@ def enroll_command(args: argparse.Namespace) -> int:
         print()
         print("To start the connector, run:")
         print()
-        print("  agentwatch-cli start")
+        print("  python -m agentwatch_cli start")
         print()
         print("Or install as a background service:")
         print()
-        print("  agentwatch-cli install-service")
+        print("  python -m agentwatch_cli install-service")
         print()
 
         return 0
