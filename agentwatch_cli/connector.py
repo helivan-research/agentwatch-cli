@@ -180,6 +180,10 @@ class MoltbotConnector:
         async def on_job(data: Dict[str, Any]):
             await self._handle_job(data)
 
+        @self.sio.on("health_check")
+        async def on_health_check(data: Dict[str, Any]):
+            await self._handle_health_check(data)
+
         @self.sio.on("ping")
         async def on_ping(data: Dict[str, Any]):
             # Respond to ping with heartbeat
@@ -301,6 +305,56 @@ class MoltbotConnector:
 
         except Exception as e:
             self._log(f"Job {job_id} failed: {e}", "error")
+            # Send error response
+            await self.sio.emit(
+                "job_response",
+                {
+                    "type": "job_response",
+                    "job_id": job_id,
+                    "success": False,
+                    "error": str(e),
+                },
+            )
+
+    async def _handle_health_check(self, data: Dict[str, Any]) -> None:
+        """
+        Handle a health check request from the cloud.
+        Verifies connectivity to the local gateway without requiring admin scope.
+
+        Args:
+            data: Health check data containing job_id
+        """
+        job_id = data.get("job_id")
+        if not job_id:
+            self._log("Received health_check without job_id", "error")
+            return
+
+        self._log(f"Received health check: {job_id}")
+
+        try:
+            # Just verify we can connect to the gateway (no chat completion needed)
+            if not self.gateway_client:
+                raise Exception("Gateway client not initialized")
+
+            is_healthy = await self.gateway_client.health_check()
+
+            if is_healthy:
+                # Send success response
+                await self.sio.emit(
+                    "job_response",
+                    {
+                        "type": "job_response",
+                        "job_id": job_id,
+                        "success": True,
+                        "response": "Gateway is healthy",
+                    },
+                )
+                self._log(f"Health check {job_id} passed")
+            else:
+                raise Exception("Gateway health check failed")
+
+        except Exception as e:
+            self._log(f"Health check {job_id} failed: {e}", "error")
             # Send error response
             await self.sio.emit(
                 "job_response",
