@@ -24,31 +24,25 @@ AgentWatch Cloud <---> agentwatch-cli <---> Local Moltbot Gateway
 
 ## Installation
 
-**Recommended:** Use `pipx` for CLI tools (handles PATH automatically):
+### Linux
 
 ```bash
-# Install pipx if you don't have it
-brew install pipx        # macOS
-apt install pipx         # Debian/Ubuntu
-dnf install pipx         # Fedora
-pip install --user pipx  # Any platform
-
-# Ensure pipx is in PATH
-pipx ensurepath
-
-# Install agentwatch-cli
-pipx install agentwatch-cli
+pip install --user agentwatch-cli
 ```
 
-**Alternative:** Use pip (may require PATH configuration):
+The script is installed to `~/.local/bin/` which is typically in your PATH.
+
+### macOS
 
 ```bash
-pip install agentwatch-cli
+pip install --user agentwatch-cli
 
-# You may need to add the scripts directory to PATH:
-# macOS:  export PATH="$HOME/Library/Python/3.9/bin:$PATH"
-# Linux:  export PATH="$HOME/.local/bin:$PATH"
+# Fix permissions and add to PATH
+chmod +x ~/Library/Python/*/bin/agentwatch-cli
+export PATH="$HOME/Library/Python/3.9/bin:$PATH"  # Add to ~/.zshrc for persistence
 ```
+
+Note: Replace `3.9` with your Python version if different.
 
 ## Quick Start
 
