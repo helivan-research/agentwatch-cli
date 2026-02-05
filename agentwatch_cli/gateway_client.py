@@ -145,13 +145,14 @@ class GatewayClient:
         finally:
             self._pending_requests.pop(req_id, None)
 
-    async def _send_request(self, method: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def _send_request(self, method: str, params: Dict[str, Any], include_auth: bool = True) -> Dict[str, Any]:
         """
         Send a request and wait for response.
 
         Args:
             method: RPC method name
             params: Method parameters
+            include_auth: Whether to include auth token in request
 
         Returns:
             Response payload
@@ -166,6 +167,10 @@ class GatewayClient:
             "method": method,
             "params": params
         }
+
+        # Include auth if token available
+        if include_auth and self.token:
+            request["params"]["auth"] = {"password": self.token}
 
         # Create future before sending
         future: asyncio.Future = asyncio.get_event_loop().create_future()
