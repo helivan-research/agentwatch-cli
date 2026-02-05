@@ -46,7 +46,7 @@ def enroll_command(args: argparse.Namespace) -> int:
 
     enrollment_url = os.environ.get(
         "AGENTWATCH_ENROLLMENT_URL",
-        "https://agentwatch.helivan.io/api/connector/enroll",
+        "https://agentwatch-api-production.up.railway.app/api/connector/enroll",
     )
 
     try:
