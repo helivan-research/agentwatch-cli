@@ -7,7 +7,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="agentwatch-cli",
-    version="0.1.1",
+    version="0.1.2",
     author="AgentWatch",
     author_email="support@agentwatch.io",
     description="Connect your local Moltbot gateway to AgentWatch cloud",

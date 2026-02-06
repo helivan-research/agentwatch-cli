@@ -72,7 +72,7 @@ class GatewayClient:
                             "platform": "python"
                         },
                         "role": "operator",
-                        "scopes": ["operator.read", "operator.write"],
+                        "scopes": ["operator.read", "operator.write", "operator.admin"],
                     }
                 }
 
