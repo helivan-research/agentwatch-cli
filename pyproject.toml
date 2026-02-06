@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentwatch-cli"
-version = "0.1.5"
+version = "0.1.6"
 description = "Connect your local Moltbot gateway to AgentWatch cloud"
 readme = "README.md"
 license = "MIT"

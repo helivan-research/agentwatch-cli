@@ -191,8 +191,8 @@ class MoltbotClient:
     async def _send_chat_request(self, messages: List[Dict[str, str]]) -> str:
         """Internal method to send chat request without retry logic."""
 
-        # Get session key
-        session_key = await self._get_session_key()
+        # Use a unique session key per request to avoid context bleed
+        session_key = f"agentwatch-{uuid.uuid4()}"
 
         # Extract user message (last user message)
         user_message = None
