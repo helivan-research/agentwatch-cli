@@ -194,6 +194,9 @@ class MoltbotConnector:
         if not self.sio:
             return
 
+        # Resolve gateway token for auth payload
+        gateway_token = get_effective_gateway_token(self.config)
+
         if self.pending_challenge and self.config.secret:
             # Use HMAC-based authentication
             timestamp = int(time.time() * 1000)
@@ -210,6 +213,8 @@ class MoltbotConnector:
                 "timestamp": timestamp,
                 "signature": signature,
                 "secret": self.config.secret,
+                "gateway_url": self.config.gateway_url,
+                "gateway_token": gateway_token,
             }
             self._log("Authenticating with HMAC signature")
         else:
@@ -219,6 +224,8 @@ class MoltbotConnector:
                 "type": "auth",
                 "connector_id": self.config.connector_id,
                 "secret": self.config.secret,
+                "gateway_url": self.config.gateway_url,
+                "gateway_token": gateway_token,
             }
 
         await self.sio.emit("auth", auth_message)
