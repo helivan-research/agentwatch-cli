@@ -1,11 +1,17 @@
 """
 WebSocket client for Moltbot using the chat.send method.
-This is the working approach for sending messages to a local Moltbot.
+
+This client creates a dedicated session for the connector (to avoid interfering
+with the user's active session) and clears the session history after each request
+to ensure fresh context for every question.
 """
 
 import asyncio
 import json
+import os
+import time
 import uuid
+from pathlib import Path
 from typing import List, Dict, Optional
 import websockets
 from websockets.client import WebSocketClientProtocol
@@ -13,6 +19,10 @@ from websockets.client import WebSocketClientProtocol
 
 class MoltbotClient:
     """WebSocket client for Moltbot using chat.send method."""
+
+    CONNECTOR_SESSION_KEY = "agent:main:agentwatch-connector"
+    SESSIONS_FILE = Path.home() / ".openclaw" / "agents" / "main" / "sessions" / "sessions.json"
+    SESSIONS_DIR = Path.home() / ".openclaw" / "agents" / "main" / "sessions"
 
     def __init__(self, url: str, token: str, timeout: float = 120.0):
         """
@@ -37,6 +47,10 @@ class MoltbotClient:
         self._ws: Optional[WebSocketClientProtocol] = None
         self._connected = False
         self._session_key: Optional[str] = None
+        self._session_id: Optional[str] = None
+
+        # Ensure connector session exists in sessions.json
+        self._ensure_connector_session()
 
     async def connect(self) -> bool:
         """
@@ -97,39 +111,63 @@ class MoltbotClient:
             print(f"Connection error: {e}")
             return False
 
+    def _ensure_connector_session(self) -> None:
+        """Ensure the connector session exists in sessions.json."""
+        if not self.SESSIONS_FILE.exists():
+            print(f"Warning: Sessions file not found at {self.SESSIONS_FILE}")
+            return
+
+        try:
+            with open(self.SESSIONS_FILE, 'r') as f:
+                sessions = json.load(f)
+
+            if self.CONNECTOR_SESSION_KEY not in sessions:
+                # Generate a unique session ID
+                session_id = str(uuid.uuid4())
+
+                # Add minimal session entry
+                sessions[self.CONNECTOR_SESSION_KEY] = {
+                    "sessionId": session_id,
+                    "updatedAt": int(time.time() * 1000),
+                    "modelProvider": "anthropic",
+                    "model": "claude-opus-4-5",
+                    "contextTokens": 200000,
+                    "abortedLastRun": False
+                }
+
+                # Write back
+                with open(self.SESSIONS_FILE, 'w') as f:
+                    json.dump(sessions, f, indent=2)
+
+                self._session_id = session_id
+                print(f"Created connector session: {self.CONNECTOR_SESSION_KEY}")
+            else:
+                self._session_id = sessions[self.CONNECTOR_SESSION_KEY].get("sessionId")
+                print(f"Using existing connector session: {self.CONNECTOR_SESSION_KEY}")
+
+            self._session_key = self.CONNECTOR_SESSION_KEY
+
+        except Exception as e:
+            print(f"Warning: Failed to ensure connector session: {e}")
+
     async def _get_session_key(self) -> str:
-        """Get a session key for chat.send."""
-        if self._session_key:
-            return self._session_key
+        """Get the connector session key."""
+        if not self._session_key:
+            self._session_key = self.CONNECTOR_SESSION_KEY
+        return self._session_key
 
-        req_id = str(uuid.uuid4())
-        request = {
-            "type": "req",
-            "id": req_id,
-            "method": "sessions.list",
-            "params": {}
-        }
+    def _clear_session_history(self) -> None:
+        """Clear session history by deleting the session's .jsonl file."""
+        if not self._session_id:
+            return
 
-        await self._ws.send(json.dumps(request))
-
-        # Wait for response
-        while True:
-            msg = await asyncio.wait_for(self._ws.recv(), timeout=self.timeout)
-            data = json.loads(msg)
-
-            if data.get("type") == "res" and data.get("id") == req_id:
-                if data.get("ok"):
-                    sessions = data.get("payload", {}).get("sessions", [])
-                    if not sessions:
-                        raise Exception("No sessions available")
-                    self._session_key = sessions[0]["key"]
-                    return self._session_key
-                else:
-                    raise Exception(f"Failed to get sessions: {data.get('error')}")
-
-            elif data.get("type") == "event":
-                # Skip events
-                continue
+        session_file = self.SESSIONS_DIR / f"{self._session_id}.jsonl"
+        try:
+            if session_file.exists():
+                session_file.unlink()
+                print(f"Cleared session history: {session_file}")
+        except Exception as e:
+            print(f"Warning: Failed to clear session history: {e}")
 
     async def chat(
         self,
@@ -176,9 +214,8 @@ class MoltbotClient:
                 # Check if it's a connection error we can retry
                 if any(x in error_str for x in ["connection", "restart", "closed", "keepalive", "ping timeout", "1011"]):
                     if attempt < max_retries - 1:
-                        # Reset connection state
+                        # Reset connection state (but keep session_key since it's in sessions.json)
                         self._connected = False
-                        self._session_key = None
                         await asyncio.sleep(2 ** attempt)
                         continue
 
@@ -254,7 +291,16 @@ class MoltbotClient:
                     break
                 raise Exception("Timeout waiting for Moltbot response")
 
-        return "".join(response_content) if response_content else ""
+        response = "".join(response_content) if response_content else ""
+
+        # Clear session history after each request for fresh context next time
+        try:
+            self._clear_session_history()
+        except Exception as e:
+            # Don't fail the request if clearing fails
+            print(f"Warning: Failed to clear session history: {e}")
+
+        return response
 
     async def health_check(self) -> bool:
         """
@@ -276,4 +322,4 @@ class MoltbotClient:
         if self._ws:
             await self._ws.close()
             self._ws = None
-        self._session_key = None
+        # Don't clear session_key - it's persistent in sessions.json
