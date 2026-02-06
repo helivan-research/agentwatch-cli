@@ -10,7 +10,7 @@ from typing import Dict, Any, Optional, Callable
 import socketio
 
 from .config import ConnectorConfig, get_effective_gateway_token
-from .gateway_client import GatewayClient
+from .moltbot_client import MoltbotClient
 
 
 def compute_hmac_signature(secret: str, challenge: str, timestamp: int) -> str:
@@ -58,7 +58,7 @@ class MoltbotConnector:
         """
         self.config = config
         self.sio: Optional[socketio.AsyncClient] = None
-        self.gateway_client: Optional[GatewayClient] = None
+        self.gateway_client: Optional[MoltbotClient] = None
         self.running = False
         self.reconnect_attempts = 0
         self.max_reconnect_attempts = 0  # 0 = infinite
@@ -91,9 +91,9 @@ class MoltbotConnector:
             self._log("Connector is not enrolled. Run 'agentwatch-cli enroll' first.", "error")
             return False
 
-        # Initialize gateway client
+        # Initialize Moltbot client
         gateway_token = get_effective_gateway_token(self.config)
-        self.gateway_client = GatewayClient(
+        self.gateway_client = MoltbotClient(
             url=self.config.gateway_url,
             token=gateway_token,
         )
@@ -414,7 +414,7 @@ class MoltbotConnector:
 
 async def test_gateway_connection(config: ConnectorConfig) -> bool:
     """
-    Test connection to the local gateway.
+    Test connection to the local Moltbot gateway.
 
     Args:
         config: Connector configuration
@@ -423,7 +423,7 @@ async def test_gateway_connection(config: ConnectorConfig) -> bool:
         True if connection is successful
     """
     gateway_token = get_effective_gateway_token(config)
-    client = GatewayClient(
+    client = MoltbotClient(
         url=config.gateway_url,
         token=gateway_token,
     )

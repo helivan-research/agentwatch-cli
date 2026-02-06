@@ -13,6 +13,7 @@ from typing import Optional
 DEFAULT_CONFIG_DIR = Path.home() / ".agentwatch-cli"
 DEFAULT_CONFIG_FILE = DEFAULT_CONFIG_DIR / "config.json"
 OPENCLAW_CONFIG_PATH = Path.home() / ".openclaw" / "openclaw.json"
+OPENCLAW_AUTH_PROFILES_PATH = Path.home() / ".openclaw" / "agents" / "main" / "agent" / "auth-profiles.json"
 
 
 @dataclass
@@ -120,3 +121,43 @@ def get_effective_gateway_token(config: ConnectorConfig) -> Optional[str]:
         return config.gateway_token
 
     return discover_gateway_token()
+
+
+def discover_anthropic_api_key() -> Optional[str]:
+    """
+    Auto-discover Anthropic API key from OpenClaw auth profiles.
+
+    OpenClaw stores API keys in ~/.openclaw/agents/main/agent/auth-profiles.json
+    when users authenticate during setup (via OAuth or setup token).
+
+    Returns:
+        The active Anthropic API key if found, None otherwise.
+    """
+    if not OPENCLAW_AUTH_PROFILES_PATH.exists():
+        return None
+
+    try:
+        with open(OPENCLAW_AUTH_PROFILES_PATH, "r") as f:
+            auth_data = json.load(f)
+
+        # Get the last good profile for Anthropic
+        last_good = auth_data.get("lastGood", {}).get("anthropic")
+
+        if last_good and last_good in auth_data.get("profiles", {}):
+            profile = auth_data["profiles"][last_good]
+            return profile.get("token")
+
+        # Fallback: find any working Anthropic profile
+        profiles = auth_data.get("profiles", {})
+        for profile_name, profile in profiles.items():
+            if (
+                profile.get("provider") == "anthropic"
+                and profile.get("type") == "token"
+                and profile.get("token")
+            ):
+                return profile["token"]
+
+    except (json.JSONDecodeError, KeyError, TypeError, FileNotFoundError):
+        pass
+
+    return None
