@@ -8,6 +8,7 @@ import hmac
 import time
 from typing import Dict, Any, Optional, Callable
 import socketio
+import httpx
 
 from .config import ConnectorConfig, get_effective_gateway_token
 from .gateway_client import GatewayClient
@@ -288,15 +289,33 @@ class MoltbotConnector:
             if system_prompt:
                 messages = [{"role": "system", "content": system_prompt}] + messages
 
-            # Forward to local gateway
-            if not self.gateway_client:
-                raise Exception("Gateway client not initialized")
+            # Forward to local gateway via HTTP (OpenAI-compatible endpoint)
+            http_url = self.config.gateway_url.rstrip("/")
+            if http_url.startswith("ws://"):
+                http_url = "http://" + http_url[5:]
+            elif http_url.startswith("wss://"):
+                http_url = "https://" + http_url[6:]
+            elif not http_url.startswith("http://") and not http_url.startswith("https://"):
+                http_url = "http://" + http_url
+            http_url = http_url + "/v1/chat/completions"
 
-            response = await self.gateway_client.chat(
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
+            headers = {"Content-Type": "application/json"}
+            gateway_token = get_effective_gateway_token(self.config)
+            if gateway_token:
+                headers["Authorization"] = f"Bearer {gateway_token}"
+
+            payload = {
+                "model": "openclaw",
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }
+
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                resp = await client.post(http_url, headers=headers, json=payload)
+                resp.raise_for_status()
+                result = resp.json()
+                response = result.get("choices", [{}])[0].get("message", {}).get("content", "")
 
             # Send success response
             await self.sio.emit(
