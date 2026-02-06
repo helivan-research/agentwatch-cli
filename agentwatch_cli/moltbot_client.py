@@ -156,6 +156,9 @@ class MoltbotClient:
 
         for attempt in range(max_retries):
             try:
+                # Always reconnect to avoid stale WebSocket connections
+                if self._connected:
+                    await self.disconnect()
                 if not self._connected:
                     connected = await self.connect()
                     if not connected:
@@ -171,7 +174,7 @@ class MoltbotClient:
                 error_str = str(e).lower()
 
                 # Check if it's a connection error we can retry
-                if any(x in error_str for x in ["connection", "restart", "closed"]):
+                if any(x in error_str for x in ["connection", "restart", "closed", "keepalive", "ping timeout", "1011"]):
                     if attempt < max_retries - 1:
                         # Reset connection state
                         self._connected = False
