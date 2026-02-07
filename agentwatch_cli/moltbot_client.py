@@ -18,20 +18,21 @@ from websockets.client import WebSocketClientProtocol
 
 
 class MoltbotClient:
-    """WebSocket client for Moltbot using chat.send method."""
+    """WebSocket client for Moltbot using chat.send method with session pooling for parallel requests."""
 
-    CONNECTOR_SESSION_KEY = "agent:main:agentwatch-connector"
+    CONNECTOR_SESSION_PREFIX = "agent:main:agentwatch-connector"
     SESSIONS_FILE = Path.home() / ".openclaw" / "agents" / "main" / "sessions" / "sessions.json"
     SESSIONS_DIR = Path.home() / ".openclaw" / "agents" / "main" / "sessions"
 
-    def __init__(self, url: str, token: str, timeout: float = 120.0):
+    def __init__(self, url: str, token: str, timeout: float = 120.0, pool_size: int = 5):
         """
-        Initialize the Moltbot client.
+        Initialize the Moltbot client with session pooling.
 
         Args:
             url: The gateway WebSocket URL (e.g., "ws://127.0.0.1:18789")
             token: The gateway authentication token
             timeout: Request timeout in seconds
+            pool_size: Number of sessions in the pool for parallel requests
         """
         # Normalize URL to ws://
         if url.startswith("http://"):
@@ -44,13 +45,21 @@ class MoltbotClient:
         self.url = url.rstrip("/")
         self.token = token
         self.timeout = timeout
+        self.pool_size = pool_size
         self._ws: Optional[WebSocketClientProtocol] = None
         self._connected = False
-        self._session_key: Optional[str] = None
-        self._session_id: Optional[str] = None
 
-        # Ensure connector session exists in sessions.json
-        self._ensure_connector_session()
+        # Session pool: list of (session_key, session_id) tuples
+        self._session_pool: List[tuple[str, str]] = []
+        self._available_sessions: Optional[asyncio.Queue] = None
+
+        # Message routing for parallel requests
+        self._pending_requests: Dict[str, asyncio.Queue] = {}
+        self._receiver_task: Optional[asyncio.Task] = None
+        self._receiver_lock = asyncio.Lock()
+
+        # Ensure connector sessions exist in sessions.json
+        self._ensure_connector_sessions()
 
     async def connect(self) -> bool:
         """
@@ -98,6 +107,8 @@ class MoltbotClient:
 
                 if response.get("type") == "res" and response.get("ok"):
                     self._connected = True
+                    # Start background receiver task
+                    self._receiver_task = asyncio.create_task(self._receive_messages())
                     return True
                 else:
                     error = response.get("error", response)
@@ -111,8 +122,56 @@ class MoltbotClient:
             print(f"Connection error: {e}")
             return False
 
-    def _ensure_connector_session(self) -> None:
-        """Ensure the connector session exists in sessions.json."""
+    async def _receive_messages(self):
+        """Background task that receives messages and routes them to pending requests."""
+        try:
+            while self._connected and self._ws:
+                try:
+                    msg = await self._ws.recv()
+                    data = json.loads(msg)
+
+                    # Route message based on request ID
+                    req_id = data.get("id")
+                    if req_id and req_id in self._pending_requests:
+                        request_info = self._pending_requests[req_id]
+                        await request_info["queue"].put(data)
+
+                        # Store runId if this is the initial response
+                        if data.get("type") == "res" and data.get("ok"):
+                            run_id = data.get("payload", {}).get("runId")
+                            if run_id:
+                                request_info["run_id"] = run_id
+
+                    elif data.get("type") == "event":
+                        payload = data.get("payload", {})
+                        run_id = payload.get("runId")
+                        session_key = payload.get("sessionKey")
+
+                        # Route event to the request that matches runId or sessionKey
+                        for req_id, request_info in list(self._pending_requests.items()):
+                            if run_id and request_info["run_id"] == run_id:
+                                try:
+                                    request_info["queue"].put_nowait(data)
+                                except asyncio.QueueFull:
+                                    pass
+                                break
+                            elif session_key and request_info["session_key"] == session_key and not run_id:
+                                # Fallback to sessionKey matching for events without runId
+                                try:
+                                    request_info["queue"].put_nowait(data)
+                                except asyncio.QueueFull:
+                                    pass
+                                break
+
+                except Exception as e:
+                    if self._connected:
+                        print(f"Receiver error: {e}")
+                    break
+        except asyncio.CancelledError:
+            pass
+
+    def _ensure_connector_sessions(self) -> None:
+        """Ensure connector sessions exist in sessions.json (creates pool_size sessions)."""
         if not self.SESSIONS_FILE.exists():
             print(f"Warning: Sessions file not found at {self.SESSIONS_FILE}")
             return
@@ -121,47 +180,49 @@ class MoltbotClient:
             with open(self.SESSIONS_FILE, 'r') as f:
                 sessions = json.load(f)
 
-            if self.CONNECTOR_SESSION_KEY not in sessions:
-                # Generate a unique session ID
-                session_id = str(uuid.uuid4())
+            modified = False
+            for i in range(self.pool_size):
+                session_key = f"{self.CONNECTOR_SESSION_PREFIX}-{i}"
 
-                # Add minimal session entry
-                sessions[self.CONNECTOR_SESSION_KEY] = {
-                    "sessionId": session_id,
-                    "updatedAt": int(time.time() * 1000),
-                    "modelProvider": "anthropic",
-                    "model": "claude-opus-4-5",
-                    "contextTokens": 200000,
-                    "abortedLastRun": False
-                }
+                if session_key not in sessions:
+                    # Generate a unique session ID
+                    session_id = str(uuid.uuid4())
 
-                # Write back
+                    # Add minimal session entry
+                    sessions[session_key] = {
+                        "sessionId": session_id,
+                        "updatedAt": int(time.time() * 1000),
+                        "modelProvider": "anthropic",
+                        "model": "claude-opus-4-5",
+                        "contextTokens": 200000,
+                        "abortedLastRun": False
+                    }
+
+                    self._session_pool.append((session_key, session_id))
+                    modified = True
+                    print(f"Created connector session: {session_key}")
+                else:
+                    session_id = sessions[session_key].get("sessionId")
+                    self._session_pool.append((session_key, session_id))
+
+            # Write back if modified
+            if modified:
                 with open(self.SESSIONS_FILE, 'w') as f:
                     json.dump(sessions, f, indent=2)
 
-                self._session_id = session_id
-                print(f"Created connector session: {self.CONNECTOR_SESSION_KEY}")
-            else:
-                self._session_id = sessions[self.CONNECTOR_SESSION_KEY].get("sessionId")
-                print(f"Using existing connector session: {self.CONNECTOR_SESSION_KEY}")
+            # Initialize the queue with available sessions
+            self._available_sessions = asyncio.Queue()
+            for session in self._session_pool:
+                self._available_sessions.put_nowait(session)
 
-            self._session_key = self.CONNECTOR_SESSION_KEY
+            print(f"Session pool ready: {self.pool_size} sessions available")
 
         except Exception as e:
-            print(f"Warning: Failed to ensure connector session: {e}")
+            print(f"Warning: Failed to ensure connector sessions: {e}")
 
-    async def _get_session_key(self) -> str:
-        """Get the connector session key."""
-        if not self._session_key:
-            self._session_key = self.CONNECTOR_SESSION_KEY
-        return self._session_key
-
-    def _clear_session_history(self) -> None:
+    def _clear_session_history(self, session_id: str) -> None:
         """Clear session history by deleting the session's .jsonl file."""
-        if not self._session_id:
-            return
-
-        session_file = self.SESSIONS_DIR / f"{self._session_id}.jsonl"
+        session_file = self.SESSIONS_DIR / f"{session_id}.jsonl"
         try:
             if session_file.exists():
                 session_file.unlink()
@@ -194,9 +255,7 @@ class MoltbotClient:
 
         for attempt in range(max_retries):
             try:
-                # Always reconnect to avoid stale WebSocket connections
-                if self._connected:
-                    await self.disconnect()
+                # Connect if not already connected
                 if not self._connected:
                     connected = await self.connect()
                     if not connected:
@@ -205,7 +264,15 @@ class MoltbotClient:
                             continue
                         raise Exception("Failed to connect to Moltbot")
 
-                return await self._send_chat_request(messages)
+                # Acquire session from pool
+                session_key, session_id = await self._available_sessions.get()
+
+                try:
+                    response = await self._send_chat_request(messages, session_key, session_id)
+                    return response
+                finally:
+                    # Always release session back to pool
+                    await self._available_sessions.put((session_key, session_id))
 
             except Exception as e:
                 last_error = e
@@ -225,11 +292,8 @@ class MoltbotClient:
         # All retries exhausted
         raise Exception(f"Failed after {max_retries} attempts: {last_error}")
 
-    async def _send_chat_request(self, messages: List[Dict[str, str]]) -> str:
+    async def _send_chat_request(self, messages: List[Dict[str, str]], session_key: str, session_id: str) -> str:
         """Internal method to send chat request without retry logic."""
-
-        # Get session key from Moltbot
-        session_key = await self._get_session_key()
 
         # Extract user message (last user message)
         user_message = None
@@ -254,48 +318,69 @@ class MoltbotClient:
             }
         }
 
-        await self._ws.send(json.dumps(request))
+        # Create queue for this request, store with both req_id and session_key
+        message_queue = asyncio.Queue(maxsize=100)
+        self._pending_requests[req_id] = {
+            "queue": message_queue,
+            "session_key": session_key,
+            "run_id": None
+        }
 
-        # Wait for initial response
-        initial_response_received = False
-        response_content = []
+        try:
+            await self._ws.send(json.dumps(request))
 
-        while True:
-            try:
-                msg = await asyncio.wait_for(self._ws.recv(), timeout=self.timeout)
-                data = json.loads(msg)
+            # Wait for initial response and events
+            initial_response_received = False
+            response_content = []
+            timeout_start = asyncio.get_event_loop().time()
+            request_info = self._pending_requests[req_id]
 
-                if data.get("type") == "res" and data.get("id") == req_id:
-                    if not data.get("ok"):
-                        raise Exception(f"chat.send failed: {data.get('error')}")
-                    initial_response_received = True
-                    # Continue to collect turn events
+            while True:
+                try:
+                    # Calculate remaining timeout
+                    elapsed = asyncio.get_event_loop().time() - timeout_start
+                    remaining_timeout = self.timeout - elapsed
+                    if remaining_timeout <= 0:
+                        raise asyncio.TimeoutError()
 
-                elif data.get("type") == "event":
-                    event = data.get("event", "")
-                    payload = data.get("payload", {})
+                    data = await asyncio.wait_for(request_info["queue"].get(), timeout=remaining_timeout)
 
-                    # Response is in chat events with message.content[].text structure
-                    # Only collect from the final state to avoid duplicates
-                    if event == "chat" and payload.get("state") == "final":
-                        message = payload.get("message", {})
-                        content_blocks = message.get("content", [])
-                        for block in content_blocks:
-                            if block.get("type") == "text" and block.get("text"):
-                                response_content.append(block["text"])
+                    if data.get("type") == "res" and data.get("id") == req_id:
+                        if not data.get("ok"):
+                            raise Exception(f"chat.send failed: {data.get('error')}")
+                        initial_response_received = True
+                        # Continue to collect turn events
+
+                    elif data.get("type") == "event":
+                        event = data.get("event", "")
+                        payload = data.get("payload", {})
+
+                        # Response is in chat events with message.content[].text structure
+                        # Only collect from the final state to avoid duplicates
+                        if event == "chat" and payload.get("state") == "final":
+                            message = payload.get("message", {})
+                            content_blocks = message.get("content", [])
+                            for block in content_blocks:
+                                if block.get("type") == "text" and block.get("text"):
+                                    response_content.append(block["text"])
+                            break
+
+                except asyncio.TimeoutError:
+                    # If we got some content, return it
+                    if response_content:
                         break
+                    raise Exception("Timeout waiting for Moltbot response")
 
-            except asyncio.TimeoutError:
-                # If we got some content, return it
-                if response_content:
-                    break
-                raise Exception("Timeout waiting for Moltbot response")
+        finally:
+            # Clean up pending request
+            if req_id in self._pending_requests:
+                del self._pending_requests[req_id]
 
         response = "".join(response_content) if response_content else ""
 
         # Clear session history after each request for fresh context next time
         try:
-            self._clear_session_history()
+            self._clear_session_history(session_id)
         except Exception as e:
             # Don't fail the request if clearing fails
             print(f"Warning: Failed to clear session history: {e}")
@@ -319,7 +404,19 @@ class MoltbotClient:
     async def disconnect(self):
         """Disconnect from Moltbot."""
         self._connected = False
+
+        # Cancel receiver task
+        if self._receiver_task:
+            self._receiver_task.cancel()
+            try:
+                await self._receiver_task
+            except asyncio.CancelledError:
+                pass
+            self._receiver_task = None
+
         if self._ws:
             await self._ws.close()
             self._ws = None
-        # Don't clear session_key - it's persistent in sessions.json
+
+        # Clear pending requests
+        self._pending_requests.clear()
