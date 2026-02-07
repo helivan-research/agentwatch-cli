@@ -49,9 +49,9 @@ class MoltbotClient:
         self._ws: Optional[WebSocketClientProtocol] = None
         self._connected = False
 
-        # Session pool: list of (session_key, session_id) tuples
-        self._session_pool: List[tuple[str, str]] = []
-        self._available_sessions: Optional[asyncio.Queue] = None
+        # Session slots: limit concurrency without reusing sessions
+        self._session_semaphore: Optional[asyncio.Semaphore] = None
+        self._session_counter = 0
 
         # Message routing for parallel requests
         self._pending_requests: Dict[str, asyncio.Queue] = {}
@@ -61,8 +61,9 @@ class MoltbotClient:
         # Snapshot agent state for consistent evaluation
         self._agent_snapshot = self._capture_agent_snapshot()
 
-        # Ensure connector sessions exist in sessions.json
-        self._ensure_connector_sessions()
+        # Initialize session semaphore for concurrency control
+        self._session_semaphore = asyncio.Semaphore(pool_size)
+        print(f"Session concurrency limit: {pool_size}")
 
     async def connect(self) -> bool:
         """
@@ -211,89 +212,52 @@ class MoltbotClient:
             print(f"Warning: Failed to capture agent snapshot: {e}")
             return {}
 
-    def _ensure_connector_sessions(self) -> None:
-        """Ensure connector sessions exist in sessions.json (creates pool_size sessions)."""
-        if not self.SESSIONS_FILE.exists():
-            print(f"Warning: Sessions file not found at {self.SESSIONS_FILE}")
-            return
+    def _create_fresh_session(self) -> tuple[str, str]:
+        """Create a fresh session for a request."""
+        import uuid
+        from datetime import datetime
+
+        # Generate unique session ID
+        session_id = str(uuid.uuid4())
+        self._session_counter += 1
+        session_key = f"{self.CONNECTOR_SESSION_PREFIX}-{self._session_counter}"
 
         try:
-            with open(self.SESSIONS_FILE, 'r') as f:
-                sessions = json.load(f)
+            # Create session in sessions.json
+            if self.SESSIONS_FILE.exists():
+                with open(self.SESSIONS_FILE, 'r') as f:
+                    sessions = json.load(f)
+            else:
+                sessions = {}
 
-            modified = False
-            for i in range(self.pool_size):
-                session_key = f"{self.CONNECTOR_SESSION_PREFIX}-{i}"
+            # Create session data with snapshot
+            session_data = {
+                "sessionId": session_id,
+                "type": "embedded",
+                "createdAt": int(time.time() * 1000),
+                "updatedAt": int(time.time() * 1000),
+                "modelProvider": self._agent_snapshot.get("modelProvider", "anthropic"),
+                "model": self._agent_snapshot.get("model", "claude-opus-4-5"),
+                "contextTokens": self._agent_snapshot.get("contextTokens", 200000),
+            }
 
-                if session_key not in sessions:
-                    # Generate a unique session ID
-                    session_id = str(uuid.uuid4())
+            # Add snapshot metadata if available
+            if self._agent_snapshot.get("skillsSnapshot"):
+                session_data["skillsSnapshot"] = self._agent_snapshot["skillsSnapshot"]
+            if self._agent_snapshot.get("systemPromptReport"):
+                session_data["systemPromptReport"] = self._agent_snapshot["systemPromptReport"]
+            if self._agent_snapshot.get("authProfileOverride"):
+                session_data["authProfileOverride"] = self._agent_snapshot["authProfileOverride"]
+                session_data["authProfileOverrideSource"] = self._agent_snapshot.get("authProfileOverrideSource", "auto")
 
-                    # Create session with snapshot data
-                    session_data = {
-                        "sessionId": session_id,
-                        "updatedAt": int(time.time() * 1000),
-                        "abortedLastRun": False,
-                        # Apply snapshot fields
-                        "modelProvider": self._agent_snapshot.get("modelProvider", "anthropic"),
-                        "model": self._agent_snapshot.get("model", "claude-opus-4-5"),
-                        "contextTokens": self._agent_snapshot.get("contextTokens", 200000),
-                    }
+            sessions[session_key] = session_data
 
-                    # Add snapshot metadata if available
-                    if self._agent_snapshot.get("skillsSnapshot"):
-                        session_data["skillsSnapshot"] = self._agent_snapshot["skillsSnapshot"]
-                    if self._agent_snapshot.get("systemPromptReport"):
-                        session_data["systemPromptReport"] = self._agent_snapshot["systemPromptReport"]
-                    if self._agent_snapshot.get("authProfileOverride"):
-                        session_data["authProfileOverride"] = self._agent_snapshot["authProfileOverride"]
-                        session_data["authProfileOverrideSource"] = self._agent_snapshot.get("authProfileOverrideSource", "auto")
+            # Write sessions.json
+            with open(self.SESSIONS_FILE, 'w') as f:
+                json.dump(sessions, f, indent=2)
 
-                    sessions[session_key] = session_data
-                    self._session_pool.append((session_key, session_id))
-                    modified = True
-                    print(f"Created connector session: {session_key}")
-                else:
-                    session_id = sessions[session_key].get("sessionId")
-                    self._session_pool.append((session_key, session_id))
-
-                    # Update existing session with fresh snapshot
-                    sessions[session_key].update({
-                        "updatedAt": int(time.time() * 1000),
-                        "modelProvider": self._agent_snapshot.get("modelProvider", "anthropic"),
-                        "model": self._agent_snapshot.get("model", "claude-opus-4-5"),
-                        "contextTokens": self._agent_snapshot.get("contextTokens", 200000),
-                    })
-                    if self._agent_snapshot.get("skillsSnapshot"):
-                        sessions[session_key]["skillsSnapshot"] = self._agent_snapshot["skillsSnapshot"]
-                    if self._agent_snapshot.get("systemPromptReport"):
-                        sessions[session_key]["systemPromptReport"] = self._agent_snapshot["systemPromptReport"]
-                    if self._agent_snapshot.get("authProfileOverride"):
-                        sessions[session_key]["authProfileOverride"] = self._agent_snapshot["authProfileOverride"]
-                        sessions[session_key]["authProfileOverrideSource"] = self._agent_snapshot.get("authProfileOverrideSource", "auto")
-                    modified = True
-
-            # Write back if modified
-            if modified:
-                with open(self.SESSIONS_FILE, 'w') as f:
-                    json.dump(sessions, f, indent=2)
-
-            # Initialize the queue with available sessions
-            self._available_sessions = asyncio.Queue()
-            for session in self._session_pool:
-                self._available_sessions.put_nowait(session)
-
-            print(f"Session pool ready: {self.pool_size} sessions available")
-
-        except Exception as e:
-            print(f"Warning: Failed to ensure connector sessions: {e}")
-
-    def _clear_session_history(self, session_id: str) -> None:
-        """Clear session history by writing a minimal valid session file."""
-        session_file = self.SESSIONS_DIR / f"{session_id}.jsonl"
-        try:
-            # Write minimal session header to keep OpenClaw happy
-            from datetime import datetime
+            # Create session file
+            session_file = self.SESSIONS_DIR / f"{session_id}.jsonl"
             session_header = {
                 "type": "session",
                 "version": 3,
@@ -303,9 +267,34 @@ class MoltbotClient:
             }
             with open(session_file, 'w') as f:
                 f.write(json.dumps(session_header) + "\n")
-            print(f"Cleared session history: {session_file}")
+
+            return (session_key, session_id)
+
         except Exception as e:
-            print(f"Warning: Failed to clear session history: {e}")
+            print(f"Warning: Failed to create fresh session: {e}")
+            # Fallback to basic session
+            return (session_key, session_id)
+
+    def _cleanup_session(self, session_key: str, session_id: str) -> None:
+        """Clean up a session after use."""
+        try:
+            # Delete session file
+            session_file = self.SESSIONS_DIR / f"{session_id}.jsonl"
+            if session_file.exists():
+                session_file.unlink()
+
+            # Remove from sessions.json
+            if self.SESSIONS_FILE.exists():
+                with open(self.SESSIONS_FILE, 'r') as f:
+                    sessions = json.load(f)
+
+                if session_key in sessions:
+                    del sessions[session_key]
+                    with open(self.SESSIONS_FILE, 'w') as f:
+                        json.dump(sessions, f, indent=2)
+
+        except Exception as e:
+            print(f"Warning: Failed to clean up session: {e}")
 
     async def chat(
         self,
@@ -341,25 +330,33 @@ class MoltbotClient:
                             continue
                         raise Exception("Failed to connect to Moltbot")
 
-                # Acquire session from pool
-                session_key, session_id = await self._available_sessions.get()
+                # Acquire slot from semaphore (limits concurrency)
+                async with self._session_semaphore:
+                    # Create fresh session for this request
+                    session_key, session_id = self._create_fresh_session()
 
-                try:
-                    response = await self._send_chat_request(messages, session_key, session_id)
-                    return response
-                finally:
-                    # Always release session back to pool
-                    await self._available_sessions.put((session_key, session_id))
+                    try:
+                        response = await self._send_chat_request(messages, session_key, session_id)
+                        return response
+                    finally:
+                        # Clean up session after use
+                        self._cleanup_session(session_key, session_id)
 
             except Exception as e:
                 last_error = e
                 error_str = str(e).lower()
 
-                # Check if it's a connection error we can retry
-                if any(x in error_str for x in ["connection", "restart", "closed", "keepalive", "ping timeout", "1011"]):
+                # Check if it's a retryable error
+                is_connection_error = any(x in error_str for x in ["connection", "restart", "closed", "keepalive", "ping timeout", "1011"])
+                is_empty_response = "empty response" in error_str
+
+                if is_connection_error or is_empty_response:
                     if attempt < max_retries - 1:
-                        # Reset connection state (but keep session_key since it's in sessions.json)
-                        self._connected = False
+                        if is_connection_error:
+                            # Reset connection state for connection errors
+                            self._connected = False
+                        if is_empty_response:
+                            print(f"Warning: Empty response on attempt {attempt + 1}, retrying...")
                         await asyncio.sleep(2 ** attempt)
                         continue
 
@@ -466,13 +463,7 @@ class MoltbotClient:
                 "This may indicate an error in the agent or the request."
             )
 
-        # Clear session history after each request for fresh context next time
-        try:
-            self._clear_session_history(session_id)
-        except Exception as e:
-            # Don't fail the request if clearing fails
-            print(f"Warning: Failed to clear session history: {e}")
-
+        # Note: Session cleanup happens in chat() finally block
         return response
 
     async def health_check(self) -> bool:
