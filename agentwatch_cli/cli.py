@@ -59,6 +59,7 @@ from .config import (
     save_config,
     discover_gateway_token,
     get_effective_gateway_token,
+    get_config_path,
     DEFAULT_CONFIG_FILE,
 )
 from .connector import MoltbotConnector, test_gateway_connection
@@ -131,11 +132,15 @@ def normalize_enrollment_code(code: str) -> str:
 def enroll_command(args: argparse.Namespace) -> int:
     """Handle the enroll command."""
     enrollment_code = normalize_enrollment_code(args.code)
+    config_name = getattr(args, 'name', None)
 
-    print(f"Enrolling with code: {enrollment_code}")
+    if config_name:
+        print(f"Enrolling with code: {enrollment_code} (config: config-{config_name}.json)")
+    else:
+        print(f"Enrolling with code: {enrollment_code}")
 
     # Load existing config or create new
-    config = load_config()
+    config = load_config(name=config_name)
 
     # Determine enrollment endpoint
     # First try environment variable, then default
@@ -193,7 +198,7 @@ def enroll_command(args: argparse.Namespace) -> int:
             # Don't save the token - let it be discovered each time for security
 
         # Save config
-        save_config(config)
+        save_config(config, name=config_name)
 
         # Fix script permissions (needed for pipx on macOS)
         if fix_script_permissions():
@@ -204,16 +209,20 @@ def enroll_command(args: argparse.Namespace) -> int:
             print("Enabled OpenClaw HTTP chat completions endpoint")
             print("Note: You may need to restart OpenClaw for changes to take effect")
 
+        config_file = get_config_path(config_name)
         print()
         print("=" * 50)
         print("Enrollment successful!")
         print("=" * 50)
         print(f"Agent: {config.agent_name}")
-        print(f"Config saved to: {DEFAULT_CONFIG_FILE}")
+        print(f"Config saved to: {config_file}")
         print()
         print("To start the connector, run:")
         print()
-        print("  agentwatch-cli start")
+        if config_name:
+            print(f"  agentwatch-cli start --name {config_name}")
+        else:
+            print("  agentwatch-cli start")
         print()
         print("Or install as a background service:")
         print()
@@ -233,11 +242,16 @@ def enroll_command(args: argparse.Namespace) -> int:
 
 def start_command(args: argparse.Namespace) -> int:
     """Handle the start command."""
-    config = load_config()
+    config_name = getattr(args, 'name', None)
+    config = load_config(name=config_name)
 
     if not config.is_enrolled():
-        print("Connector is not enrolled.")
-        print("Please run: agentwatch-cli enroll --code <YOUR_CODE>")
+        config_file = get_config_path(config_name)
+        print(f"Connector is not enrolled (config: {config_file})")
+        if config_name:
+            print(f"Please run: agentwatch-cli enroll --name {config_name} --code <YOUR_CODE>")
+        else:
+            print("Please run: agentwatch-cli enroll --code <YOUR_CODE>")
         return 1
 
     # Apply command line overrides
@@ -276,7 +290,8 @@ def start_command(args: argparse.Namespace) -> int:
 
 def status_command(args: argparse.Namespace) -> int:
     """Handle the status command."""
-    config = load_config()
+    config_name = getattr(args, 'name', None)
+    config = load_config(name=config_name)
 
     print("AgentWatch CLI Connector Status")
     print("=" * 40)
@@ -327,7 +342,8 @@ def status_command(args: argparse.Namespace) -> int:
 
 def config_command(args: argparse.Namespace) -> int:
     """Handle the config command."""
-    config = load_config()
+    config_name = getattr(args, 'name', None)
+    config = load_config(name=config_name)
 
     if args.gateway_url:
         config.gateway_url = args.gateway_url
@@ -342,15 +358,17 @@ def config_command(args: argparse.Namespace) -> int:
         print(f"Set agentwatch_url = {args.agentwatch_url}")
 
     # Save updated config
-    save_config(config)
-    print(f"Configuration saved to {DEFAULT_CONFIG_FILE}")
+    save_config(config, name=config_name)
+    config_file = get_config_path(config_name)
+    print(f"Configuration saved to {config_file}")
 
     return 0
 
 
 def revoke_command(args: argparse.Namespace) -> int:
     """Handle the revoke command (clear enrollment)."""
-    config = load_config()
+    config_name = getattr(args, 'name', None)
+    config = load_config(name=config_name)
 
     if not config.is_enrolled():
         print("Connector is not enrolled.")
@@ -371,7 +389,7 @@ def revoke_command(args: argparse.Namespace) -> int:
     config.agent_id = None
     config.agent_name = None
 
-    save_config(config)
+    save_config(config, name=config_name)
 
     print("Enrollment revoked. You will need to re-enroll to use the connector.")
     return 0
@@ -379,11 +397,15 @@ def revoke_command(args: argparse.Namespace) -> int:
 
 def install_service_command(args: argparse.Namespace) -> int:
     """Handle the install-service command."""
-    config = load_config()
+    config_name = getattr(args, 'name', None)
+    config = load_config(name=config_name)
 
     if not config.is_enrolled():
         print("Error: Connector is not enrolled.")
-        print("Please run 'agentwatch-cli enroll --code <CODE>' first.")
+        if config_name:
+            print(f"Please run 'agentwatch-cli enroll --name {config_name} --code <CODE>' first.")
+        else:
+            print("Please run 'agentwatch-cli enroll --code <CODE>' first.")
         return 1
 
     print("Installing agentwatch-cli as a system service...")
@@ -435,10 +457,16 @@ def main() -> int:
     enroll_parser.add_argument(
         "--code", "-c", required=True, help="Enrollment code from AgentWatch"
     )
+    enroll_parser.add_argument(
+        "--name", "-n", help="Config name (uses config-{name}.json, e.g., 'main', 'work')"
+    )
 
     # start command
     start_parser = subparsers.add_parser(
         "start", help="Start the connector"
+    )
+    start_parser.add_argument(
+        "--name", "-n", help="Config name (uses config-{name}.json, e.g., 'main', 'work')"
     )
     start_parser.add_argument(
         "--gateway-url", help="Override gateway URL"
@@ -448,13 +476,19 @@ def main() -> int:
     )
 
     # status command
-    subparsers.add_parser(
+    status_parser = subparsers.add_parser(
         "status", help="Show connector status"
+    )
+    status_parser.add_argument(
+        "--name", "-n", help="Config name (uses config-{name}.json, e.g., 'main', 'work')"
     )
 
     # config command
     config_parser = subparsers.add_parser(
         "config", help="Configure connector settings"
+    )
+    config_parser.add_argument(
+        "--name", "-n", help="Config name (uses config-{name}.json, e.g., 'main', 'work')"
     )
     config_parser.add_argument(
         "--gateway-url", help="Set gateway URL"
@@ -471,12 +505,18 @@ def main() -> int:
         "revoke", help="Revoke enrollment"
     )
     revoke_parser.add_argument(
+        "--name", "-n", help="Config name (uses config-{name}.json, e.g., 'main', 'work')"
+    )
+    revoke_parser.add_argument(
         "--force", "-f", action="store_true", help="Skip confirmation"
     )
 
     # install-service command
     install_service_parser = subparsers.add_parser(
         "install-service", help="Install as a system service (auto-start on boot)"
+    )
+    install_service_parser.add_argument(
+        "--name", "-n", help="Config name (uses config-{name}.json, e.g., 'main', 'work')"
     )
     install_service_parser.add_argument(
         "--user", help="User to run the service as (Linux only, default: current user)"

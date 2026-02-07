@@ -16,6 +16,23 @@ OPENCLAW_CONFIG_PATH = Path.home() / ".openclaw" / "openclaw.json"
 OPENCLAW_AUTH_PROFILES_PATH = Path.home() / ".openclaw" / "agents" / "main" / "agent" / "auth-profiles.json"
 
 
+def get_config_path(name: Optional[str] = None) -> Path:
+    """
+    Get the config file path for a named configuration.
+
+    Args:
+        name: Optional name for the config (e.g., "main", "work")
+              If None, uses default "config.json"
+              If provided, uses "config-{name}.json"
+
+    Returns:
+        Path to the config file
+    """
+    if name:
+        return DEFAULT_CONFIG_DIR / f"config-{name}.json"
+    return DEFAULT_CONFIG_FILE
+
+
 @dataclass
 class ConnectorConfig:
     """Configuration for the agentwatch-cli connector."""
@@ -38,9 +55,21 @@ class ConnectorConfig:
         return bool(self.connector_id and self.secret and self.agent_id)
 
 
-def load_config(config_path: Optional[Path] = None) -> ConnectorConfig:
-    """Load configuration from file."""
-    path = config_path or DEFAULT_CONFIG_FILE
+def load_config(config_path: Optional[Path] = None, name: Optional[str] = None) -> ConnectorConfig:
+    """
+    Load configuration from file.
+
+    Args:
+        config_path: Explicit path to config file (takes precedence)
+        name: Named config (e.g., "main", "work") - uses config-{name}.json
+
+    Returns:
+        ConnectorConfig instance
+    """
+    if config_path:
+        path = config_path
+    else:
+        path = get_config_path(name)
 
     if not path.exists():
         return ConnectorConfig()
@@ -54,9 +83,19 @@ def load_config(config_path: Optional[Path] = None) -> ConnectorConfig:
         return ConnectorConfig()
 
 
-def save_config(config: ConnectorConfig, config_path: Optional[Path] = None) -> None:
-    """Save configuration to file."""
-    path = config_path or DEFAULT_CONFIG_FILE
+def save_config(config: ConnectorConfig, config_path: Optional[Path] = None, name: Optional[str] = None) -> None:
+    """
+    Save configuration to file.
+
+    Args:
+        config: Configuration to save
+        config_path: Explicit path to config file (takes precedence)
+        name: Named config (e.g., "main", "work") - uses config-{name}.json
+    """
+    if config_path:
+        path = config_path
+    else:
+        path = get_config_path(name)
 
     # Create directory if it doesn't exist
     path.parent.mkdir(parents=True, exist_ok=True)
