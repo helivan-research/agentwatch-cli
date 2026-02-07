@@ -58,6 +58,9 @@ class MoltbotClient:
         self._receiver_task: Optional[asyncio.Task] = None
         self._receiver_lock = asyncio.Lock()
 
+        # Snapshot agent state for consistent evaluation
+        self._agent_snapshot = self._capture_agent_snapshot()
+
         # Ensure connector sessions exist in sessions.json
         self._ensure_connector_sessions()
 
@@ -170,6 +173,44 @@ class MoltbotClient:
         except asyncio.CancelledError:
             pass
 
+    def _capture_agent_snapshot(self) -> Dict:
+        """Capture a snapshot of the main agent's state for consistent evaluation."""
+        if not self.SESSIONS_FILE.exists():
+            print(f"Warning: Sessions file not found at {self.SESSIONS_FILE}")
+            return {}
+
+        try:
+            with open(self.SESSIONS_FILE, 'r') as f:
+                sessions = json.load(f)
+
+            # Get the main session as template
+            main_session = sessions.get("agent:main:main", {})
+
+            # Extract snapshot fields (these define agent state)
+            snapshot = {
+                "skillsSnapshot": main_session.get("skillsSnapshot"),
+                "systemPromptReport": main_session.get("systemPromptReport"),
+                "modelProvider": main_session.get("modelProvider", "anthropic"),
+                "model": main_session.get("model", "claude-opus-4-5"),
+                "contextTokens": main_session.get("contextTokens", 200000),
+                "authProfileOverride": main_session.get("authProfileOverride"),
+                "authProfileOverrideSource": main_session.get("authProfileOverrideSource"),
+            }
+
+            print(f"Captured agent snapshot from main session")
+            if snapshot.get("skillsSnapshot"):
+                skill_count = len(snapshot["skillsSnapshot"].get("skills", []))
+                print(f"  Skills: {skill_count}")
+            if snapshot.get("systemPromptReport"):
+                file_count = len(snapshot["systemPromptReport"].get("injectedWorkspaceFiles", []))
+                print(f"  Workspace files: {file_count}")
+
+            return snapshot
+
+        except Exception as e:
+            print(f"Warning: Failed to capture agent snapshot: {e}")
+            return {}
+
     def _ensure_connector_sessions(self) -> None:
         """Ensure connector sessions exist in sessions.json (creates pool_size sessions)."""
         if not self.SESSIONS_FILE.exists():
@@ -188,22 +229,49 @@ class MoltbotClient:
                     # Generate a unique session ID
                     session_id = str(uuid.uuid4())
 
-                    # Add minimal session entry
-                    sessions[session_key] = {
+                    # Create session with snapshot data
+                    session_data = {
                         "sessionId": session_id,
                         "updatedAt": int(time.time() * 1000),
-                        "modelProvider": "anthropic",
-                        "model": "claude-opus-4-5",
-                        "contextTokens": 200000,
-                        "abortedLastRun": False
+                        "abortedLastRun": False,
+                        # Apply snapshot fields
+                        "modelProvider": self._agent_snapshot.get("modelProvider", "anthropic"),
+                        "model": self._agent_snapshot.get("model", "claude-opus-4-5"),
+                        "contextTokens": self._agent_snapshot.get("contextTokens", 200000),
                     }
 
+                    # Add snapshot metadata if available
+                    if self._agent_snapshot.get("skillsSnapshot"):
+                        session_data["skillsSnapshot"] = self._agent_snapshot["skillsSnapshot"]
+                    if self._agent_snapshot.get("systemPromptReport"):
+                        session_data["systemPromptReport"] = self._agent_snapshot["systemPromptReport"]
+                    if self._agent_snapshot.get("authProfileOverride"):
+                        session_data["authProfileOverride"] = self._agent_snapshot["authProfileOverride"]
+                        session_data["authProfileOverrideSource"] = self._agent_snapshot.get("authProfileOverrideSource", "auto")
+
+                    sessions[session_key] = session_data
                     self._session_pool.append((session_key, session_id))
                     modified = True
                     print(f"Created connector session: {session_key}")
                 else:
                     session_id = sessions[session_key].get("sessionId")
                     self._session_pool.append((session_key, session_id))
+
+                    # Update existing session with fresh snapshot
+                    sessions[session_key].update({
+                        "updatedAt": int(time.time() * 1000),
+                        "modelProvider": self._agent_snapshot.get("modelProvider", "anthropic"),
+                        "model": self._agent_snapshot.get("model", "claude-opus-4-5"),
+                        "contextTokens": self._agent_snapshot.get("contextTokens", 200000),
+                    })
+                    if self._agent_snapshot.get("skillsSnapshot"):
+                        sessions[session_key]["skillsSnapshot"] = self._agent_snapshot["skillsSnapshot"]
+                    if self._agent_snapshot.get("systemPromptReport"):
+                        sessions[session_key]["systemPromptReport"] = self._agent_snapshot["systemPromptReport"]
+                    if self._agent_snapshot.get("authProfileOverride"):
+                        sessions[session_key]["authProfileOverride"] = self._agent_snapshot["authProfileOverride"]
+                        sessions[session_key]["authProfileOverrideSource"] = self._agent_snapshot.get("authProfileOverrideSource", "auto")
+                    modified = True
 
             # Write back if modified
             if modified:
