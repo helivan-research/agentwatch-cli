@@ -221,12 +221,21 @@ class MoltbotClient:
             print(f"Warning: Failed to ensure connector sessions: {e}")
 
     def _clear_session_history(self, session_id: str) -> None:
-        """Clear session history by deleting the session's .jsonl file."""
+        """Clear session history by writing a minimal valid session file."""
         session_file = self.SESSIONS_DIR / f"{session_id}.jsonl"
         try:
-            if session_file.exists():
-                session_file.unlink()
-                print(f"Cleared session history: {session_file}")
+            # Write minimal session header to keep OpenClaw happy
+            from datetime import datetime
+            session_header = {
+                "type": "session",
+                "version": 3,
+                "id": session_id,
+                "timestamp": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+                "cwd": str(Path.home() / ".openclaw" / "workspace")
+            }
+            with open(session_file, 'w') as f:
+                f.write(json.dumps(session_header) + "\n")
+            print(f"Cleared session history: {session_file}")
         except Exception as e:
             print(f"Warning: Failed to clear session history: {e}")
 
