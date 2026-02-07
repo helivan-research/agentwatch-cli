@@ -446,7 +446,11 @@ class MoltbotClient:
                     # If we got some content, return it
                     if response_content:
                         break
-                    raise Exception("Timeout waiting for Moltbot response")
+                    # Provide more context about what we were waiting for
+                    if initial_response_received:
+                        raise Exception("Timeout waiting for final response content (got initial response but no content)")
+                    else:
+                        raise Exception("Timeout waiting for Moltbot response (no initial response received)")
 
         finally:
             # Clean up pending request
@@ -454,6 +458,13 @@ class MoltbotClient:
                 del self._pending_requests[req_id]
 
         response = "".join(response_content) if response_content else ""
+
+        # Validate response is not empty
+        if not response or not response.strip():
+            raise Exception(
+                f"Received empty response from Moltbot (session: {session_key}). "
+                "This may indicate an error in the agent or the request."
+            )
 
         # Clear session history after each request for fresh context next time
         try:
