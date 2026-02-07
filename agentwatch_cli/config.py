@@ -12,8 +12,24 @@ from typing import Optional
 # Default paths
 DEFAULT_CONFIG_DIR = Path.home() / ".agentwatch-cli"
 DEFAULT_CONFIG_FILE = DEFAULT_CONFIG_DIR / "config.json"
-OPENCLAW_CONFIG_PATH = Path.home() / ".openclaw" / "openclaw.json"
-OPENCLAW_AUTH_PROFILES_PATH = Path.home() / ".openclaw" / "agents" / "main" / "agent" / "auth-profiles.json"
+
+# Framework paths (OpenClaw or legacy Clawdbot)
+def _detect_framework_base() -> Path:
+    """Auto-detect framework base directory (OpenClaw vs Clawdbot)."""
+    openclaw_base = Path.home() / ".openclaw"
+    if openclaw_base.exists():
+        return openclaw_base
+
+    clawdbot_base = Path.home() / ".clawdbot"
+    if clawdbot_base.exists():
+        return clawdbot_base
+
+    # Default to OpenClaw
+    return openclaw_base
+
+FRAMEWORK_BASE = _detect_framework_base()
+OPENCLAW_CONFIG_PATH = FRAMEWORK_BASE / "openclaw.json"
+OPENCLAW_AUTH_PROFILES_PATH = FRAMEWORK_BASE / "agents" / "main" / "agent" / "auth-profiles.json"
 
 
 def get_config_path(name: Optional[str] = None) -> Path:
@@ -139,17 +155,22 @@ def discover_gateway_token() -> Optional[str]:
     Auto-discover gateway token from openclaw.json.
 
     Checks in order:
-    1. Current directory: ./openclaw.json
-    2. Home directory: ~/.openclaw/openclaw.json
+    1. Home directory: ~/.openclaw/openclaw.json or ~/.clawdbot/openclaw.json
+    2. Current directory: ./openclaw.json
 
     Returns:
         The gateway token if found, None otherwise.
     """
-    # Check home directory first, then current directory
+    # Check both OpenClaw and legacy Clawdbot paths
     search_paths = [
         OPENCLAW_CONFIG_PATH,
         Path.cwd() / "openclaw.json",
     ]
+
+    # Add legacy Clawdbot path if not already covered
+    legacy_path = Path.home() / ".clawdbot" / "openclaw.json"
+    if legacy_path not in search_paths and legacy_path.exists():
+        search_paths.insert(1, legacy_path)
 
     for config_path in search_paths:
         if not config_path.exists():

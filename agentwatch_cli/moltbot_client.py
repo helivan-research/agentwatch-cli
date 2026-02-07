@@ -17,12 +17,41 @@ import websockets
 from websockets.client import WebSocketClientProtocol
 
 
+def _detect_framework_paths() -> tuple[Path, Path]:
+    """
+    Auto-detect framework paths (OpenClaw vs legacy Clawdbot).
+
+    Returns:
+        (sessions_file, sessions_dir) tuple
+    """
+    # Try OpenClaw paths first (current)
+    openclaw_base = Path.home() / ".openclaw"
+    if openclaw_base.exists():
+        return (
+            openclaw_base / "agents" / "main" / "sessions" / "sessions.json",
+            openclaw_base / "agents" / "main" / "sessions"
+        )
+
+    # Fall back to legacy Clawdbot paths
+    clawdbot_base = Path.home() / ".clawdbot"
+    if clawdbot_base.exists():
+        return (
+            clawdbot_base / "agents" / "main" / "sessions" / "sessions.json",
+            clawdbot_base / "agents" / "main" / "sessions"
+        )
+
+    # Default to OpenClaw if neither exists
+    return (
+        openclaw_base / "agents" / "main" / "sessions" / "sessions.json",
+        openclaw_base / "agents" / "main" / "sessions"
+    )
+
+
 class MoltbotClient:
     """WebSocket client for Moltbot using chat.send method with session pooling for parallel requests."""
 
     CONNECTOR_SESSION_PREFIX = "agent:main:agentwatch-connector"
-    SESSIONS_FILE = Path.home() / ".openclaw" / "agents" / "main" / "sessions" / "sessions.json"
-    SESSIONS_DIR = Path.home() / ".openclaw" / "agents" / "main" / "sessions"
+    SESSIONS_FILE, SESSIONS_DIR = _detect_framework_paths()
 
     def __init__(self, url: str, token: str, timeout: float = 120.0, pool_size: int = 5):
         """
@@ -57,6 +86,11 @@ class MoltbotClient:
         self._pending_requests: Dict[str, asyncio.Queue] = {}
         self._receiver_task: Optional[asyncio.Task] = None
         self._receiver_lock = asyncio.Lock()
+
+        # Detect and log framework version
+        framework_name = "OpenClaw" if ".openclaw" in str(self.SESSIONS_FILE) else "Clawdbot (legacy)"
+        print(f"Detected framework: {framework_name}")
+        print(f"Session path: {self.SESSIONS_DIR}")
 
         # Snapshot agent state for consistent evaluation
         self._agent_snapshot = self._capture_agent_snapshot()
@@ -258,12 +292,15 @@ class MoltbotClient:
 
             # Create session file
             session_file = self.SESSIONS_DIR / f"{session_id}.jsonl"
+
+            # Use detected framework base for workspace path
+            framework_base = self.SESSIONS_DIR.parent.parent.parent  # Go up from sessions to framework root
             session_header = {
                 "type": "session",
                 "version": 3,
                 "id": session_id,
                 "timestamp": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
-                "cwd": str(Path.home() / ".openclaw" / "workspace")
+                "cwd": str(framework_base / "workspace")
             }
             with open(session_file, 'w') as f:
                 f.write(json.dumps(session_header) + "\n")
