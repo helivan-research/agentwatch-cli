@@ -33,6 +33,33 @@ def get_config_path(name: Optional[str] = None) -> Path:
     return DEFAULT_CONFIG_FILE
 
 
+def discover_all_configs() -> list[tuple[Optional[str], Path]]:
+    """
+    Discover all configuration files.
+
+    Returns:
+        List of (config_name, config_path) tuples.
+        config_name is None for the default config.json,
+        or the name extracted from config-{name}.json.
+    """
+    configs = []
+
+    if not DEFAULT_CONFIG_DIR.exists():
+        return configs
+
+    # Check for default config.json
+    if DEFAULT_CONFIG_FILE.exists():
+        configs.append((None, DEFAULT_CONFIG_FILE))
+
+    # Check for named configs (config-*.json)
+    for config_file in DEFAULT_CONFIG_DIR.glob("config-*.json"):
+        # Extract name from "config-{name}.json"
+        name = config_file.stem.replace("config-", "")
+        configs.append((name, config_file))
+
+    return configs
+
+
 @dataclass
 class ConnectorConfig:
     """Configuration for the agentwatch-cli connector."""

@@ -60,6 +60,7 @@ from .config import (
     discover_gateway_token,
     get_effective_gateway_token,
     get_config_path,
+    discover_all_configs,
     DEFAULT_CONFIG_FILE,
 )
 from .connector import MoltbotConnector, test_gateway_connection
@@ -243,6 +244,17 @@ def enroll_command(args: argparse.Namespace) -> int:
 def start_command(args: argparse.Namespace) -> int:
     """Handle the start command."""
     config_name = getattr(args, 'name', None)
+
+    # If --name is provided, start only that connector
+    if config_name:
+        return _start_single_connector(config_name, args)
+
+    # Otherwise, discover and start all enrolled connectors
+    return _start_all_connectors(args)
+
+
+def _start_single_connector(config_name: Optional[str], args: argparse.Namespace) -> int:
+    """Start a single connector by name."""
     config = load_config(name=config_name)
 
     if not config.is_enrolled():
@@ -283,6 +295,70 @@ def start_command(args: argparse.Namespace) -> int:
 
     try:
         return asyncio.run(test_and_run())
+    except KeyboardInterrupt:
+        print("\nStopped by user")
+        return 0
+
+
+def _start_all_connectors(args: argparse.Namespace) -> int:
+    """Discover and start all enrolled connectors."""
+    all_configs = discover_all_configs()
+
+    if not all_configs:
+        print("No configurations found.")
+        print("Please run: agentwatch-cli enroll --code <YOUR_CODE>")
+        return 1
+
+    # Load and filter to only enrolled configs
+    enrolled_configs = []
+    for name, config_path in all_configs:
+        config = load_config(name=name)
+        if config.is_enrolled():
+            # Apply command line overrides
+            if args.gateway_url:
+                config.gateway_url = args.gateway_url
+            if args.gateway_token:
+                config.gateway_token = args.gateway_token
+            enrolled_configs.append((name, config))
+
+    if not enrolled_configs:
+        print("No enrolled connectors found.")
+        print("Please run: agentwatch-cli enroll --code <YOUR_CODE>")
+        return 1
+
+    print(f"Found {len(enrolled_configs)} enrolled connector(s):")
+    for name, config in enrolled_configs:
+        config_label = f"config-{name}.json" if name else "config.json"
+        print(f"  - {config.agent_name} ({config_label})")
+    print()
+
+    # Start all connectors in parallel
+    async def test_and_run_all():
+        # Test all gateways first
+        print("Testing gateway connections...")
+        for name, config in enrolled_configs:
+            config_label = f"config-{name}.json" if name else "config.json"
+            if not await test_gateway_connection(config):
+                print(f"✗ {config.agent_name} ({config_label}): Cannot connect to {config.gateway_url}")
+                print("  Please make sure the Moltbot gateway is running.")
+                return 1
+            print(f"✓ {config.agent_name} ({config_label}): Gateway OK")
+
+        print()
+        print(f"Starting {len(enrolled_configs)} connector(s)...")
+        print()
+
+        # Create and run all connectors
+        connectors = [MoltbotConnector(config) for _, config in enrolled_configs]
+
+        # Run all connectors concurrently
+        tasks = [connector.run() for connector in connectors]
+        await asyncio.gather(*tasks)
+
+        return 0
+
+    try:
+        return asyncio.run(test_and_run_all())
     except KeyboardInterrupt:
         print("\nStopped by user")
         return 0
@@ -463,10 +539,10 @@ def main() -> int:
 
     # start command
     start_parser = subparsers.add_parser(
-        "start", help="Start the connector"
+        "start", help="Start connector(s) - starts all enrolled connectors by default"
     )
     start_parser.add_argument(
-        "--name", "-n", help="Config name (uses config-{name}.json, e.g., 'main', 'work')"
+        "--name", "-n", help="Start only a specific config (if omitted, starts all enrolled connectors)"
     )
     start_parser.add_argument(
         "--gateway-url", help="Override gateway URL"
