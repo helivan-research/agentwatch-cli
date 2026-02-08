@@ -134,10 +134,92 @@ def normalize_enrollment_code(code: str) -> str:
     return code.upper()
 
 
+def _enroll_dry_run(config_name: Optional[str] = None) -> int:
+    """Verify installation without enrolling."""
+    print("=" * 50)
+    print("Dry run: Testing installation")
+    print("=" * 50)
+    print()
+
+    all_ok = True
+
+    # 1. CLI version
+    print(f"CLI version: {__version__}")
+    print(f"  ✓ agentwatch-cli is installed and running")
+    print()
+
+    # 2. Gateway token discovery
+    token = discover_gateway_token()
+    if token:
+        print(f"Gateway token: <auto-discovered>")
+        print(f"  ✓ Found gateway token")
+    else:
+        print(f"Gateway token: NOT FOUND")
+        print(f"  ✗ Could not find gateway token in ~/.openclaw/openclaw.json")
+        all_ok = False
+    print()
+
+    # 3. Gateway connectivity
+    config = load_config(name=config_name)
+    gateway_url = config.gateway_url or "http://127.0.0.1:18789"
+    print(f"Gateway URL: {gateway_url}")
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(f"{gateway_url}/v1/models")
+            if resp.status_code == 200:
+                print(f"  ✓ Gateway is reachable")
+            else:
+                print(f"  ✗ Gateway returned HTTP {resp.status_code}")
+                all_ok = False
+    except Exception:
+        print(f"  ✗ Cannot connect to gateway")
+        all_ok = False
+    print()
+
+    # 4. Enrollment server connectivity
+    import os
+    enrollment_url = os.environ.get(
+        "AGENTWATCH_ENROLLMENT_URL",
+        "https://agentwatch-api-production.up.railway.app/api/connector/enroll",
+    )
+    base_url = enrollment_url.rsplit("/api/", 1)[0]
+    print(f"AgentWatch API: {base_url}")
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(base_url)
+            print(f"  ✓ AgentWatch API is reachable")
+    except Exception:
+        print(f"  ✗ Cannot connect to AgentWatch API")
+        all_ok = False
+    print()
+
+    # Summary
+    print("=" * 50)
+    if all_ok:
+        print("✓ All checks passed! Ready to enroll.")
+        print()
+        print("Run with a real enrollment code:")
+        print("  agentwatch-cli enroll --code <YOUR_CODE>")
+    else:
+        print("✗ Some checks failed. See above for details.")
+    print("=" * 50)
+
+    return 0 if all_ok else 1
+
+
 def enroll_command(args: argparse.Namespace) -> int:
     """Handle the enroll command."""
-    enrollment_code = normalize_enrollment_code(args.code)
     config_name = getattr(args, 'name', None)
+    dry_run = getattr(args, 'dry_run', False)
+
+    if dry_run:
+        return _enroll_dry_run(config_name)
+
+    if not args.code:
+        print("Error: --code is required (or use --dry-run to test installation)")
+        return 1
+
+    enrollment_code = normalize_enrollment_code(args.code)
 
     if config_name:
         print(f"Enrolling with code: {enrollment_code} (config: config-{config_name}.json)")
@@ -535,10 +617,14 @@ def main() -> int:
         "enroll", help="Enroll connector with an enrollment code"
     )
     enroll_parser.add_argument(
-        "--code", "-c", required=True, help="Enrollment code from AgentWatch"
+        "--code", "-c", help="Enrollment code from AgentWatch"
     )
     enroll_parser.add_argument(
         "--name", "-n", help="Config name (uses config-{name}.json, e.g., 'main', 'work')"
+    )
+    enroll_parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Test installation without enrolling (verifies CLI, PATH, and gateway)"
     )
 
     # start command
