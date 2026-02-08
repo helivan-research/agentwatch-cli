@@ -47,10 +47,8 @@ pipx install agentwatch-cli
 pip install --user agentwatch-cli
 
 # Add to PATH (add this line to ~/.zshrc for persistence)
-export PATH="$HOME/Library/Python/3.11/bin:$PATH"
+export PATH="$(python3 -c 'import sysconfig; print(sysconfig.get_path("scripts", "posix_user"))'):$PATH"
 ```
-
-Note: Replace `3.11` with your Python version (check with `python3 --version`).
 
 ### Linux (Ubuntu/Debian)
 
@@ -108,6 +106,12 @@ If you get "command not found", ensure your PATH includes the installation direc
 
 ### 2. Enroll the Connector
 
+**Quick install + enroll (single command):**
+```bash
+pip install --user --upgrade agentwatch-cli && export PATH="$(python3 -c 'import sysconfig; print(sysconfig.get_path("scripts", "posix_user"))'):$PATH" && agentwatch-cli enroll --code ABCD-1234
+```
+
+**Or if already installed:**
 ```bash
 agentwatch-cli enroll --code ABCD-1234
 ```
@@ -354,7 +358,7 @@ The CLI isn't in your PATH. Add the installation directory:
 
 **macOS (pip --user):**
 ```bash
-echo 'export PATH="$HOME/Library/Python/3.11/bin:$PATH"' >> ~/.zshrc
+echo 'export PATH="'"$(python3 -c 'import sysconfig; print(sysconfig.get_path("scripts", "posix_user"))')"':$PATH"' >> ~/.zshrc
 source ~/.zshrc
 ```
 
