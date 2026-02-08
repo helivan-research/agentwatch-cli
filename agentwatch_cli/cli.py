@@ -56,6 +56,7 @@ def fix_script_permissions() -> bool:
         # Never fail enrollment due to permission issues
         return False
 
+from . import __version__
 from .config import (
     ConnectorConfig,
     load_config,
@@ -524,7 +525,7 @@ def main() -> int:
         description="Connect your local Moltbot gateway to AgentWatch cloud",
     )
     parser.add_argument(
-        "--version", action="version", version="%(prog)s 0.1.0"
+        "--version", action="version", version=f"%(prog)s {__version__}"
     )
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
