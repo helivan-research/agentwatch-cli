@@ -22,35 +22,38 @@ def fix_script_permissions() -> bool:
     Returns:
         True if permissions were fixed, False otherwise.
     """
-    # Find the script location
-    script_path = shutil.which("agentwatch-cli")
-
-    if not script_path:
-        # Try common locations
-        possible_paths = [
-            Path.home() / ".local" / "bin" / "agentwatch-cli",
-            Path.home() / "Library" / "Python" / "3.9" / "bin" / "agentwatch-cli",
-            Path.home() / "Library" / "Python" / "3.10" / "bin" / "agentwatch-cli",
-            Path.home() / "Library" / "Python" / "3.11" / "bin" / "agentwatch-cli",
-            Path.home() / "Library" / "Python" / "3.12" / "bin" / "agentwatch-cli",
-        ]
-        for path in possible_paths:
-            if path.exists():
-                script_path = str(path)
-                break
-
-    if not script_path:
-        return False
-
     try:
+        # Find the script location
+        script_path = shutil.which("agentwatch-cli")
+
+        if not script_path:
+            # Try common locations across platforms
+            possible_paths = [
+                Path.home() / ".local" / "bin" / "agentwatch-cli",
+                Path.home() / ".local" / "pipx" / "venvs" / "agentwatch-cli" / "bin" / "agentwatch-cli",
+            ]
+            # macOS: ~/Library/Python/3.X/bin/
+            for v in range(9, 14):
+                possible_paths.append(
+                    Path.home() / "Library" / "Python" / f"3.{v}" / "bin" / "agentwatch-cli"
+                )
+            for path in possible_paths:
+                if path.exists():
+                    script_path = str(path)
+                    break
+
+        if not script_path:
+            return False
+
         path = Path(script_path)
-        # Add execute permission for owner, group, and others
         current_mode = path.stat().st_mode
         new_mode = current_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
-        path.chmod(new_mode)
-        return True
-    except Exception as e:
-        print(f"Warning: Could not fix script permissions: {e}")
+        if current_mode != new_mode:
+            path.chmod(new_mode)
+            return True
+        return False
+    except Exception:
+        # Never fail enrollment due to permission issues
         return False
 
 from .config import (
