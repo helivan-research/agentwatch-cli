@@ -108,12 +108,12 @@ If you get "command not found", ensure your PATH includes the installation direc
 
 **Quick install + enroll (single command):**
 ```bash
-pip install --user --upgrade agentwatch-cli && export PATH="$(python3 -c 'import sysconfig; print(sysconfig.get_path("scripts", "posix_user"))'):$PATH" && agentwatch-cli enroll --code ABCD-1234
+pip install --user --upgrade agentwatch-cli && python3 -m agentwatch_cli enroll --code ABCD-1234
 ```
 
 **Test your installation first (no enrollment code needed):**
 ```bash
-pip install --user --upgrade agentwatch-cli && export PATH="$(python3 -c 'import sysconfig; print(sysconfig.get_path("scripts", "posix_user"))'):$PATH" && agentwatch-cli enroll --dry-run
+pip install --user --upgrade agentwatch-cli && python3 -m agentwatch_cli enroll --dry-run
 ```
 
 **Or if already installed:**

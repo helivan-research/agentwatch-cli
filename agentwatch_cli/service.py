@@ -35,6 +35,14 @@ def get_executable_path() -> str:
     if executable:
         return executable
 
+    # Check user scripts directory (pip install --user)
+    import sysconfig
+    user_scripts = sysconfig.get_path("scripts", "posix_user")
+    if user_scripts:
+        candidate = Path(user_scripts) / "agentwatch-cli"
+        if candidate.exists():
+            return str(candidate)
+
     # Fallback: assume it's in the same location as python
     python_path = Path(sys.executable)
     bin_dir = python_path.parent
@@ -43,7 +51,7 @@ def get_executable_path() -> str:
         return str(candidate)
 
     # Last resort: use the module directly
-    return f"{sys.executable} -m agentwatch_cli.cli"
+    return f"{sys.executable} -m agentwatch_cli"
 
 
 def get_systemd_service_content(user: str, executable: str, home_dir: str) -> str:
