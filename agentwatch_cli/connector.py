@@ -3,38 +3,33 @@ Main connector class that bridges AgentWatch cloud to local Moltbot gateway.
 """
 
 import asyncio
-import hashlib
-import hmac
 import time
 from typing import Dict, Any, Optional, Callable
 import socketio
+from nacl.signing import SigningKey
 
 from .config import ConnectorConfig, get_effective_gateway_token
 from .moltbot_client import MoltbotClient
 
 
-def compute_hmac_signature(secret: str, challenge: str, timestamp: int) -> str:
+def compute_ed25519_signature(private_key_hex: str, challenge: str, timestamp: int) -> str:
     """
-    Compute HMAC-SHA256 signature for authentication.
+    Compute Ed25519 signature for authentication.
 
-    The server will verify this signature to authenticate without
-    the secret being sent over the wire.
+    The server will verify this signature using the stored public key.
 
     Args:
-        secret: The connector secret (stored hash from enrollment)
+        private_key_hex: The Ed25519 private key seed (hex, 32 bytes)
         challenge: The challenge nonce from the server
         timestamp: Current timestamp in milliseconds
 
     Returns:
-        Hex-encoded HMAC signature
+        Hex-encoded Ed25519 signature (64 bytes)
     """
-    message = f"{challenge}:{timestamp}"
-    signature = hmac.new(
-        bytes.fromhex(secret),
-        message.encode('utf-8'),
-        hashlib.sha256
-    ).hexdigest()
-    return signature
+    signing_key = SigningKey(bytes.fromhex(private_key_hex))
+    message = f"{challenge}:{timestamp}".encode('utf-8')
+    signed = signing_key.sign(message)
+    return signed.signature.hex()
 
 
 class MoltbotConnector:
@@ -190,7 +185,7 @@ class MoltbotConnector:
             await self._send_heartbeat()
 
     async def _authenticate(self) -> None:
-        """Send authentication message to cloud using HMAC."""
+        """Send authentication message to cloud using Ed25519 signature."""
         if not self.sio:
             return
 
@@ -201,13 +196,13 @@ class MoltbotConnector:
             self._log("No challenge received from server — cannot authenticate", "error")
             return
 
-        if not self.config.secret:
-            self._log("No secret configured — cannot authenticate", "error")
+        if not self.config.private_key:
+            self._log("No private key configured — cannot authenticate", "error")
             return
 
         timestamp = int(time.time() * 1000)
-        signature = compute_hmac_signature(
-            self.config.secret,
+        signature = compute_ed25519_signature(
+            self.config.private_key,
             self.pending_challenge,
             timestamp
         )
@@ -215,13 +210,14 @@ class MoltbotConnector:
         auth_message = {
             "type": "auth",
             "connector_id": self.config.connector_id,
+            "auth_method": "ed25519",
             "challenge": self.pending_challenge,
             "timestamp": timestamp,
             "signature": signature,
             "gateway_url": self.config.gateway_url,
             "gateway_token": gateway_token,
         }
-        self._log("Authenticating with HMAC signature")
+        self._log("Authenticating with Ed25519 signature")
 
         await self.sio.emit("auth", auth_message)
 

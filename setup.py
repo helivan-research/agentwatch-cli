@@ -7,7 +7,7 @@ with open("README.md", "r", encoding="utf-8") as fh:
 
 setup(
     name="agentwatch-cli",
-    version="0.1.16",
+    version="0.2.0",
     author="AgentWatch",
     author_email="support@agentwatch.io",
     description="Connect your local Moltbot gateway to AgentWatch cloud",
@@ -29,6 +29,7 @@ setup(
     python_requires=">=3.9",
     install_requires=[
         "httpx>=0.24.0",
+        "pynacl>=1.5.0",
         "python-socketio>=5.8.0",
         "websockets>=12.0,<15.1",
     ],

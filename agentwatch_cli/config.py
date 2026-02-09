@@ -82,7 +82,8 @@ class ConnectorConfig:
 
     # Credentials (set after enrollment)
     connector_id: Optional[str] = None
-    secret: Optional[str] = None
+    secret: Optional[str] = None  # Legacy HMAC secret (deprecated)
+    private_key: Optional[str] = None  # Ed25519 private key (hex, 32-byte seed)
     agent_id: Optional[str] = None
     agent_name: Optional[str] = None
 
@@ -95,7 +96,7 @@ class ConnectorConfig:
 
     def is_enrolled(self) -> bool:
         """Check if the connector is enrolled."""
-        return bool(self.connector_id and self.secret and self.agent_id)
+        return bool(self.connector_id and (self.private_key or self.secret) and self.agent_id)
 
 
 def load_config(config_path: Optional[Path] = None, name: Optional[str] = None) -> ConnectorConfig:

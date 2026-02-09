@@ -213,12 +213,14 @@ def _enroll_dry_run(config_name: Optional[str] = None) -> int:
     mock_enrollment_code = "TEST-DRY0"
     mock_connector_id = str(uuid.uuid4())
     mock_secret = secrets.token_hex(32)
+    mock_private_key = secrets.token_hex(32)  # Mock Ed25519 seed
+    mock_public_key = secrets.token_hex(32)   # Mock Ed25519 public key
     mock_agent_id = str(uuid.uuid4())
     mock_agent_name = "DryRun Test Agent"
 
     print(f"  POST {enrollment_url}")
     print(f"  Request:")
-    print(f'    {{"enrollment_code": "{mock_enrollment_code}"}}')
+    print(f'    {{"enrollment_code": "{mock_enrollment_code}", "public_key": "{mock_public_key}"}}')
     print()
 
     mock_response = {
@@ -228,6 +230,7 @@ def _enroll_dry_run(config_name: Optional[str] = None) -> int:
         "agent_id": mock_agent_id,
         "agent_name": mock_agent_name,
         "agentwatch_url": config.agentwatch_url,
+        "auth_method": "ed25519",
     }
     print(f"  Response (mock):")
     print(f"    HTTP 200")
@@ -236,7 +239,8 @@ def _enroll_dry_run(config_name: Optional[str] = None) -> int:
     print(f'     "secret": "{mock_secret[:16]}...",')
     print(f'     "agent_id": "{mock_agent_id}",')
     print(f'     "agent_name": "{mock_agent_name}",')
-    print(f'     "agentwatch_url": "{config.agentwatch_url}"}}')
+    print(f'     "agentwatch_url": "{config.agentwatch_url}",')
+    print(f'     "auth_method": "ed25519"}}')
     print()
     print(f"  ✓ Enrollment API response parsed")
     print()
@@ -248,6 +252,7 @@ def _enroll_dry_run(config_name: Optional[str] = None) -> int:
 
     config.connector_id = mock_connector_id
     config.secret = mock_secret
+    config.private_key = mock_private_key
     config.agent_id = mock_agent_id
     config.agent_name = mock_agent_name
 
@@ -287,6 +292,7 @@ def _enroll_dry_run(config_name: Optional[str] = None) -> int:
     checks = [
         ("connector_id", reloaded.connector_id == mock_connector_id),
         ("secret", reloaded.secret == mock_secret),
+        ("private_key", reloaded.private_key == mock_private_key),
         ("agent_id", reloaded.agent_id == mock_agent_id),
         ("agent_name", reloaded.agent_name == mock_agent_name),
         ("is_enrolled()", reloaded.is_enrolled()),
@@ -387,11 +393,17 @@ def enroll_command(args: argparse.Namespace) -> int:
     )
 
     try:
+        # Generate Ed25519 key pair for authentication
+        from nacl.signing import SigningKey
+        signing_key = SigningKey.generate()
+        private_key_hex = signing_key.encode().hex()  # 32-byte seed
+        public_key_hex = signing_key.verify_key.encode().hex()  # 32-byte public key
+
         # Call enrollment API
         with httpx.Client(timeout=30.0) as client:
             response = client.post(
                 enrollment_url,
-                json={"enrollment_code": enrollment_code},
+                json={"enrollment_code": enrollment_code, "public_key": public_key_hex},
             )
 
             if response.status_code == 429:
@@ -421,7 +433,8 @@ def enroll_command(args: argparse.Namespace) -> int:
 
         # Update config with enrollment data
         config.connector_id = data["connector_id"]
-        config.secret = data["secret"]
+        config.secret = data["secret"]  # Keep for backwards compat
+        config.private_key = private_key_hex  # Ed25519 private key for signing
         config.agent_id = data["agent_id"]
         config.agent_name = data["agent_name"]
         config.agentwatch_url = data.get("agentwatch_url", config.agentwatch_url)
@@ -696,6 +709,7 @@ def revoke_command(args: argparse.Namespace) -> int:
     # Clear enrollment data
     config.connector_id = None
     config.secret = None
+    config.private_key = None
     config.agent_id = None
     config.agent_name = None
 

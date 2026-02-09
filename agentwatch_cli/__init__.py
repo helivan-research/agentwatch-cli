@@ -5,7 +5,7 @@ This package provides a connector that allows AgentWatch to communicate with
 your local Moltbot (OpenClaw) gateway without exposing your local network.
 """
 
-__version__ = "0.1.16"
+__version__ = "0.2.0"
 __author__ = "AgentWatch"
 
 from .connector import MoltbotConnector
