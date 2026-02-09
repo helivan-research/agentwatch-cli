@@ -197,36 +197,31 @@ class MoltbotConnector:
         # Resolve gateway token for auth payload
         gateway_token = get_effective_gateway_token(self.config)
 
-        if self.pending_challenge and self.config.secret:
-            # Use HMAC-based authentication
-            timestamp = int(time.time() * 1000)
-            signature = compute_hmac_signature(
-                self.config.secret,
-                self.pending_challenge,
-                timestamp
-            )
+        if not self.pending_challenge:
+            self._log("No challenge received from server — cannot authenticate", "error")
+            return
 
-            auth_message = {
-                "type": "auth",
-                "connector_id": self.config.connector_id,
-                "challenge": self.pending_challenge,
-                "timestamp": timestamp,
-                "signature": signature,
-                "secret": self.config.secret,
-                "gateway_url": self.config.gateway_url,
-                "gateway_token": gateway_token,
-            }
-            self._log("Authenticating with HMAC signature")
-        else:
-            # Fall back to legacy auth (for backwards compatibility)
-            self._log("Warning: Using legacy authentication (no challenge received)", "warn")
-            auth_message = {
-                "type": "auth",
-                "connector_id": self.config.connector_id,
-                "secret": self.config.secret,
-                "gateway_url": self.config.gateway_url,
-                "gateway_token": gateway_token,
-            }
+        if not self.config.secret:
+            self._log("No secret configured — cannot authenticate", "error")
+            return
+
+        timestamp = int(time.time() * 1000)
+        signature = compute_hmac_signature(
+            self.config.secret,
+            self.pending_challenge,
+            timestamp
+        )
+
+        auth_message = {
+            "type": "auth",
+            "connector_id": self.config.connector_id,
+            "challenge": self.pending_challenge,
+            "timestamp": timestamp,
+            "signature": signature,
+            "gateway_url": self.config.gateway_url,
+            "gateway_token": gateway_token,
+        }
+        self._log("Authenticating with HMAC signature")
 
         await self.sio.emit("auth", auth_message)
 

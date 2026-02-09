@@ -6,9 +6,11 @@ import argparse
 import asyncio
 import json
 import os
+import secrets
 import shutil
 import stat
 import sys
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -135,9 +137,14 @@ def normalize_enrollment_code(code: str) -> str:
 
 
 def _enroll_dry_run(config_name: Optional[str] = None) -> int:
-    """Verify installation without enrolling."""
+    """
+    Simulate full enrollment without calling the real API.
+
+    Generates mock credentials, saves a test config, and verifies
+    the entire pipeline (gateway, config, service readiness).
+    """
     print("=" * 50)
-    print("Dry run: Testing installation")
+    print("Dry run: Simulating full enrollment")
     print("=" * 50)
     print()
 
@@ -177,7 +184,6 @@ def _enroll_dry_run(config_name: Optional[str] = None) -> int:
     print()
 
     # 4. Enrollment server connectivity
-    import os
     enrollment_url = os.environ.get(
         "AGENTWATCH_ENROLLMENT_URL",
         "https://agentwatch-api-production.up.railway.app/api/connector/enroll",
@@ -193,10 +199,152 @@ def _enroll_dry_run(config_name: Optional[str] = None) -> int:
         all_ok = False
     print()
 
+    if not all_ok:
+        print("=" * 50)
+        print("✗ Some checks failed. See above for details.")
+        print("=" * 50)
+        return 1
+
+    # 5. Simulate enrollment API call
+    print("-" * 50)
+    print("Step 1: Enrollment API (simulated)")
+    print("-" * 50)
+
+    mock_enrollment_code = "TEST-DRY0"
+    mock_connector_id = str(uuid.uuid4())
+    mock_secret = secrets.token_hex(32)
+    mock_agent_id = str(uuid.uuid4())
+    mock_agent_name = "DryRun Test Agent"
+
+    print(f"  POST {enrollment_url}")
+    print(f"  Request:")
+    print(f'    {{"enrollment_code": "{mock_enrollment_code}"}}')
+    print()
+
+    mock_response = {
+        "success": True,
+        "connector_id": mock_connector_id,
+        "secret": mock_secret,
+        "agent_id": mock_agent_id,
+        "agent_name": mock_agent_name,
+        "agentwatch_url": config.agentwatch_url,
+    }
+    print(f"  Response (mock):")
+    print(f"    HTTP 200")
+    print(f'    {{"success": true,')
+    print(f'     "connector_id": "{mock_connector_id}",')
+    print(f'     "secret": "{mock_secret[:16]}...",')
+    print(f'     "agent_id": "{mock_agent_id}",')
+    print(f'     "agent_name": "{mock_agent_name}",')
+    print(f'     "agentwatch_url": "{config.agentwatch_url}"}}')
+    print()
+    print(f"  ✓ Enrollment API response parsed")
+    print()
+
+    # 6. Save config
+    print("-" * 50)
+    print("Step 2: Save configuration")
+    print("-" * 50)
+
+    config.connector_id = mock_connector_id
+    config.secret = mock_secret
+    config.agent_id = mock_agent_id
+    config.agent_name = mock_agent_name
+
+    dry_run_name = config_name or "_dry_run"
+    save_config(config, name=dry_run_name)
+    config_file = get_config_path(dry_run_name)
+
+    print(f"  Config file: {config_file}")
+    print(f"  Contents:")
+    try:
+        with open(config_file, "r") as f:
+            saved_data = json.load(f)
+        for key, value in saved_data.items():
+            if key == "secret":
+                print(f"    {key}: {str(value)[:16]}...")
+            else:
+                print(f"    {key}: {value}")
+    except Exception as e:
+        print(f"    (could not read: {e})")
+
+    # Check file permissions
+    file_stat = config_file.stat()
+    perms = oct(file_stat.st_mode)[-3:]
+    print(f"  Permissions: {perms}")
+    if perms == "600":
+        print(f"  ✓ Config saved with correct permissions (0600)")
+    else:
+        print(f"  ! Unexpected permissions: {perms} (expected 600)")
+    print()
+
+    # 7. Reload and verify
+    print("-" * 50)
+    print("Step 3: Verify config round-trip")
+    print("-" * 50)
+
+    reloaded = load_config(name=dry_run_name)
+    checks = [
+        ("connector_id", reloaded.connector_id == mock_connector_id),
+        ("secret", reloaded.secret == mock_secret),
+        ("agent_id", reloaded.agent_id == mock_agent_id),
+        ("agent_name", reloaded.agent_name == mock_agent_name),
+        ("is_enrolled()", reloaded.is_enrolled()),
+    ]
+    for field, ok in checks:
+        status = "✓" if ok else "✗"
+        print(f"  {status} {field}: {'OK' if ok else 'MISMATCH'}")
+        if not ok:
+            all_ok = False
+    print()
+
+    # 8. Gateway token resolution
+    print("-" * 50)
+    print("Step 4: Gateway token resolution")
+    print("-" * 50)
+
+    effective_token = get_effective_gateway_token(reloaded)
+    if effective_token:
+        source = "configured" if reloaded.gateway_token else "auto-discovered"
+        print(f"  Token source: {source}")
+        print(f"  Token: {effective_token[:8]}...{effective_token[-4:]}")
+        print(f"  ✓ Gateway token resolved")
+    else:
+        print(f"  ✗ No gateway token available")
+        all_ok = False
+    print()
+
+    # 9. Service install readiness
+    print("-" * 50)
+    print("Step 5: Service install readiness")
+    print("-" * 50)
+
+    from .service import get_executable_path, get_platform
+    platform = get_platform()
+    executable = get_executable_path()
+    print(f"  Platform: {platform}")
+    print(f"  Executable: {executable}")
+    if platform in ("macos", "linux"):
+        print(f"  ✓ Service installation supported")
+    else:
+        print(f"  ✗ Service installation not supported on this platform")
+    print()
+
+    # 10. Clean up
+    print("-" * 50)
+    print("Cleanup")
+    print("-" * 50)
+    try:
+        config_file.unlink()
+        print(f"  ✓ Removed {config_file}")
+    except Exception as e:
+        print(f"  ! Could not clean up {config_file}: {e}")
+    print()
+
     # Summary
     print("=" * 50)
     if all_ok:
-        print("✓ All checks passed! Ready to enroll.")
+        print("✓ All checks passed! Full enrollment pipeline verified.")
         print()
         print("Run with a real enrollment code:")
         print("  agentwatch-cli enroll --code <YOUR_CODE>")
