@@ -139,7 +139,6 @@ class MoltbotConnector:
             self.pending_challenge = data.get("challenge")
             self.challenge_expires_at = data.get("expires_at")
             self._log("Received authentication challenge")
-            # Authenticate with HMAC
             await self._authenticate()
 
         @self.sio.event
@@ -198,9 +197,12 @@ class MoltbotConnector:
 
         if not self.config.private_key:
             self._log("No private key configured — cannot authenticate", "error")
+            self._log("Re-enroll to generate an Ed25519 key pair: agentwatch-cli revoke --force && agentwatch-cli enroll --code <CODE>", "error")
             return
 
         timestamp = int(time.time() * 1000)
+        signing_key = SigningKey(bytes.fromhex(self.config.private_key))
+        public_key_hex = signing_key.verify_key.encode().hex()
         signature = compute_ed25519_signature(
             self.config.private_key,
             self.pending_challenge,
@@ -211,6 +213,7 @@ class MoltbotConnector:
             "type": "auth",
             "connector_id": self.config.connector_id,
             "auth_method": "ed25519",
+            "public_key": public_key_hex,
             "challenge": self.pending_challenge,
             "timestamp": timestamp,
             "signature": signature,
