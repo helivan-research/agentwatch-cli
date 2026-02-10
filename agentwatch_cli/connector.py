@@ -6,6 +6,7 @@ import asyncio
 import time
 from typing import Dict, Any, Optional, Callable
 import socketio
+import httpx
 from nacl.signing import SigningKey
 
 from .config import ConnectorConfig, get_effective_gateway_token
@@ -67,6 +68,10 @@ class MoltbotConnector:
         self.pending_challenge: Optional[str] = None
         self.challenge_expires_at: Optional[int] = None
 
+        # HTTP client for chat completions (more robust than shared WebSocket)
+        self._http_client: Optional[httpx.AsyncClient] = None
+        self._http_url: Optional[str] = None
+
     def _log(self, message: str, level: str = "info") -> None:
         """Log a message with timestamp."""
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -86,12 +91,27 @@ class MoltbotConnector:
             self._log("Connector is not enrolled. Run 'agentwatch-cli enroll' first.", "error")
             return False
 
-        # Initialize Moltbot client
+        # Initialize Moltbot client (used for health checks)
         gateway_token = get_effective_gateway_token(self.config)
         self.gateway_client = MoltbotClient(
             url=self.config.gateway_url,
             token=gateway_token,
         )
+
+        # Set up HTTP client for chat completions
+        http_url = self.config.gateway_url.rstrip("/")
+        if http_url.startswith("ws://"):
+            http_url = "http://" + http_url[5:]
+        elif http_url.startswith("wss://"):
+            http_url = "https://" + http_url[6:]
+        elif not http_url.startswith("http://") and not http_url.startswith("https://"):
+            http_url = "http://" + http_url
+        self._http_url = http_url + "/v1/chat/completions"
+
+        headers = {"Content-Type": "application/json"}
+        if gateway_token:
+            headers["Authorization"] = f"Bearer {gateway_token}"
+        self._http_client = httpx.AsyncClient(timeout=120.0, headers=headers)
 
         # Test gateway connection first
         if not await self.gateway_client.health_check():
@@ -261,6 +281,9 @@ class MoltbotConnector:
         """
         Handle an incoming job request from the cloud.
 
+        Uses HTTP POST to the gateway's OpenAI-compatible /v1/chat/completions
+        endpoint. Each request is independent — no shared connection state.
+
         Args:
             data: Job data containing messages and parameters
         """
@@ -282,15 +305,24 @@ class MoltbotConnector:
             if system_prompt:
                 messages = [{"role": "system", "content": system_prompt}] + messages
 
-            # Forward to local Moltbot via WebSocket (chat.send method)
-            if not self.gateway_client:
-                raise Exception("Gateway client not initialized")
+            # Forward to local gateway via HTTP (OpenAI-compatible endpoint)
+            if not self._http_client or not self._http_url:
+                raise Exception("HTTP client not initialized")
 
-            response = await self.gateway_client.chat(
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
+            payload = {
+                "model": "openclaw",
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }
+
+            resp = await self._http_client.post(self._http_url, json=payload)
+            resp.raise_for_status()
+            result = resp.json()
+            response = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+
+            if not response or not response.strip():
+                raise Exception("Empty response from gateway")
 
             # Send success response
             await self.sio.emit(
@@ -399,6 +431,10 @@ class MoltbotConnector:
                 await self.heartbeat_task
             except asyncio.CancelledError:
                 pass
+
+        if self._http_client:
+            await self._http_client.aclose()
+            self._http_client = None
 
         if self.sio and self.sio.connected:
             await self.sio.disconnect()

@@ -8,18 +8,20 @@ Connect your local Moltbot (OpenClaw) gateway to AgentWatch cloud without exposi
 
 ## Overview
 
-`agentwatch-cli` is a secure bridge that allows AgentWatch to communicate with your locally-running Moltbot gateway. Instead of exposing your local network, the connector establishes an outbound WebSocket connection to AgentWatch cloud and relays messages between the two.
+`agentwatch-cli` is a secure bridge that allows AgentWatch to communicate with your locally-running Moltbot gateway. Instead of exposing your local network, the connector establishes an outbound Socket.IO connection to AgentWatch cloud and relays messages to your gateway via the OpenClaw WebSocket RPC protocol (`chat.send`).
 
 **Architecture:**
 ```
-AgentWatch Cloud <--WebSocket--> agentwatch-cli <--HTTP--> Local Moltbot Gateway
-     (cloud)                     (your machine)              (your machine)
+AgentWatch Cloud <--Socket.IO--> agentwatch-cli <--WebSocket RPC--> Local Moltbot Gateway
+     (cloud)                     (your machine)                       (your machine)
 ```
 
 **Key Benefits:**
 - **No port forwarding required** - All connections are outbound
-- **Secure** - TLS encryption, credentials never stored in plain text
-- **Automatic reconnection** - Handles network interruptions gracefully
+- **Secure** - TLS encryption, HMAC challenge-response authentication, credentials never stored in plain text
+- **Isolated sessions** - Creates a dedicated connector session separate from the user's active session
+- **Stateless measurement** - Session history is cleared after each request to ensure fresh, unbiased context for every question
+- **Automatic reconnection** - Handles network interruptions and stale WebSocket connections gracefully
 - **Service mode** - Runs in background, starts on boot
 
 ## Requirements
@@ -124,7 +126,7 @@ agentwatch-cli enroll --code ABCD-1234
 This will:
 - Register your connector with AgentWatch
 - Auto-discover your gateway token from `~/.openclaw/openclaw.json`
-- Enable the HTTP chat completions endpoint in OpenClaw (if needed)
+- Create a dedicated connector session in Moltbot (separate from your interactive sessions)
 - Save configuration to `~/.agentwatch-cli/config.json`
 
 ### 3. Install as a Service (Recommended)
@@ -307,16 +309,19 @@ This is the recommended approach - the token is read fresh each time, so if Open
 
 ## How It Works
 
-1. **Enrollment**: When you run `enroll`, the CLI exchanges the one-time enrollment code for permanent credentials (connector_id + secret).
+1. **Enrollment**: When you run `enroll`, the CLI exchanges the one-time enrollment code for permanent credentials (connector_id + secret). The gateway token is encrypted (AES-256-GCM) before being stored on the cloud side.
 
-2. **Connection**: On `start`, the connector establishes a WebSocket connection to AgentWatch cloud, authenticating with its credentials.
+2. **Connection**: On `start`, the connector establishes a Socket.IO connection to AgentWatch cloud and authenticates via HMAC challenge-response (the secret is never sent over the wire). It also connects to your local Moltbot gateway over WebSocket and completes the OpenClaw handshake with `operator.admin` scope.
 
-3. **Message Relay**: When a user sends a message to your custom agent in AgentWatch:
-   - AgentWatch sends the request through the WebSocket to your connector
-   - The connector forwards it to your local Moltbot gateway via HTTP
-   - The response flows back through the same path
+3. **Session Isolation**: The connector creates a dedicated session (`agent:main:agentwatch-connector`) in your Moltbot's `~/.openclaw/agents/main/sessions/sessions.json`. This session is separate from your normal interactive sessions, so connector activity never interferes with your own conversations.
 
-4. **Streaming**: For streaming responses, the connector handles chunked responses and forwards them in real-time.
+4. **Message Relay**: When AgentWatch needs to measure your agent's behavior:
+   - AgentWatch sends a job request through Socket.IO to your connector
+   - The connector forwards the question to your local Moltbot gateway using the `chat.send` WebSocket RPC method
+   - The connector waits for the `chat` event with `state: "final"` and extracts the response text
+   - The response flows back to AgentWatch through the same Socket.IO channel
+
+5. **History Clearing**: After each request completes, the connector deletes the session's `.jsonl` history file. This ensures every question is answered with a clean, empty context — no prior conversation history can influence the response. This is critical for accurate behavior measurement, as each question must be evaluated independently.
 
 ## Environment Variables
 
@@ -327,21 +332,26 @@ This is the recommended approach - the token is read fresh each time, so if Open
 ## Security
 
 - **Credentials protected**: Config file has restricted permissions (0600)
-- **No plain text secrets**: The connector secret is hashed on the cloud side
-- **TLS encryption**: All WebSocket and HTTP communication is encrypted
-- **Outbound only**: No inbound ports required - the connector initiates all connections
+- **HMAC authentication**: The connector authenticates using HMAC-SHA256 challenge-response — the secret is never transmitted over the wire
+- **Encrypted gateway token**: Your Moltbot gateway token is encrypted with AES-256-GCM before being stored on the cloud
+- **TLS encryption**: All Socket.IO and WebSocket communication uses TLS
+- **Outbound only**: No inbound ports required — the connector initiates all connections
 
 ## Troubleshooting
 
 ### "Cannot connect to local gateway"
 
-Ensure your Moltbot gateway is running:
+Ensure your Moltbot gateway is running and accepting WebSocket connections on port 18789:
 ```bash
 # Check if gateway is listening
-curl http://127.0.0.1:18789/v1/models
+agentwatch-cli status
 ```
 
-If you get a connection refused error, start your Moltbot/OpenClaw gateway.
+If the gateway shows as offline, start your Moltbot/OpenClaw gateway.
+
+### "missing scope: operator.admin"
+
+The connector requires `operator.admin` scope to use the `chat.send` method. Ensure your gateway token has sufficient permissions. The token auto-discovered from `~/.openclaw/openclaw.json` should have this scope by default.
 
 ### "Invalid enrollment code"
 
