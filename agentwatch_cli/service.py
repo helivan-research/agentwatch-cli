@@ -167,9 +167,9 @@ The connector will now:
 - Run as user: {user}
 
 Useful commands:
-  sudo systemctl status {SYSTEMD_SERVICE_NAME}   # Check status
-  sudo systemctl restart {SYSTEMD_SERVICE_NAME}  # Restart
-  sudo systemctl stop {SYSTEMD_SERVICE_NAME}     # Stop
+  sudo agentwatch-cli restart    # Restart the connector (fresh gateway connection)
+  sudo agentwatch-cli stop       # Stop the connector
+  agentwatch-cli service-status  # Check status
   journalctl -u {SYSTEMD_SERVICE_NAME} -f        # View logs
 """
     except subprocess.CalledProcessError as e:
@@ -238,9 +238,9 @@ The connector will now:
 - Restart if it crashes
 
 Useful commands:
-  launchctl list | grep agentwatch     # Check if running
-  launchctl stop {LAUNCHD_SERVICE_NAME}   # Stop
-  launchctl start {LAUNCHD_SERVICE_NAME}  # Start
+  agentwatch-cli restart    # Restart the connector (fresh gateway connection)
+  agentwatch-cli stop       # Stop the connector
+  agentwatch-cli service-status   # Check if running
 
 Logs:
   tail -f ~/Library/Logs/agentwatch-cli.log
@@ -290,6 +290,92 @@ def uninstall_service() -> Tuple[bool, str]:
         return uninstall_launchd_service()
     else:
         return False, f"Unsupported platform: {sys.platform}"
+
+
+def get_launchd_plist_path() -> Path:
+    """Path to the launchd plist (macOS)."""
+    return Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_SERVICE_NAME}.plist"
+
+
+def get_systemd_unit_path() -> Path:
+    """Path to the systemd unit file (Linux)."""
+    return Path(f"/etc/systemd/system/{SYSTEMD_SERVICE_NAME}.service")
+
+
+def is_service_installed() -> bool:
+    """Whether the connector is installed as a system service for this platform."""
+    platform = get_platform()
+    if platform == "macos":
+        return get_launchd_plist_path().exists()
+    elif platform == "linux":
+        return get_systemd_unit_path().exists()
+    return False
+
+
+def restart_service() -> Tuple[bool, str]:
+    """Restart the installed system service for the current platform."""
+    platform = get_platform()
+
+    try:
+        if platform == "macos":
+            plist_path = get_launchd_plist_path()
+            if not plist_path.exists():
+                return False, "Service not installed"
+            # unload + load forces a fresh process (and a fresh gateway connection)
+            subprocess.run(["launchctl", "unload", str(plist_path)], check=False)
+            subprocess.run(["launchctl", "load", str(plist_path)], check=True)
+            return True, f"Restarted {LAUNCHD_SERVICE_NAME}."
+
+        elif platform == "linux":
+            if not get_systemd_unit_path().exists():
+                return False, "Service not installed"
+            if os.geteuid() != 0:
+                return False, (
+                    "Root privileges required. Run with: "
+                    f"sudo systemctl restart {SYSTEMD_SERVICE_NAME}"
+                )
+            subprocess.run(["systemctl", "restart", SYSTEMD_SERVICE_NAME], check=True)
+            return True, f"Restarted {SYSTEMD_SERVICE_NAME}."
+
+        else:
+            return False, f"Unsupported platform: {sys.platform}"
+
+    except subprocess.CalledProcessError as e:
+        return False, f"Failed to restart service: {e}"
+    except Exception as e:
+        return False, f"Error: {e}"
+
+
+def stop_service() -> Tuple[bool, str]:
+    """Stop the installed system service for the current platform."""
+    platform = get_platform()
+
+    try:
+        if platform == "macos":
+            plist_path = get_launchd_plist_path()
+            if not plist_path.exists():
+                return False, "Service not installed"
+            subprocess.run(["launchctl", "unload", str(plist_path)], check=True)
+            return True, f"Stopped {LAUNCHD_SERVICE_NAME}."
+
+        elif platform == "linux":
+            if not get_systemd_unit_path().exists():
+                return False, "Service not installed"
+            if os.geteuid() != 0:
+                return False, (
+                    "Root privileges required. Run with: "
+                    f"sudo systemctl stop {SYSTEMD_SERVICE_NAME}"
+                )
+            subprocess.run(["systemctl", "stop", SYSTEMD_SERVICE_NAME], check=True)
+            return True, f"Stopped {SYSTEMD_SERVICE_NAME}."
+
+        else:
+            return False, f"Unsupported platform: {sys.platform}"
+
+    except subprocess.CalledProcessError as e:
+        return False, f"Failed to stop service: {e}"
+    except Exception as e:
+        return False, f"Error: {e}"
 
 
 def get_service_status() -> Tuple[bool, str]:

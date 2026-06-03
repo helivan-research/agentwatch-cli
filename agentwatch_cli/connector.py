@@ -64,6 +64,11 @@ class MoltbotConnector:
         self.heartbeat_interval = 30  # seconds
         self.heartbeat_task: Optional[asyncio.Task] = None
 
+        # Local-gateway health (reported to the cloud via heartbeat, distinct
+        # from the cloud Socket.IO link). None = unknown / not yet probed.
+        self._gateway_healthy: Optional[bool] = None
+        self._gateway_reason: Optional[str] = None
+
         # Authentication challenge (received from server)
         self.pending_challenge: Optional[str] = None
         self.challenge_expires_at: Optional[int] = None
@@ -267,14 +272,31 @@ class MoltbotConnector:
                 self._log(f"Heartbeat error: {e}", "warn")
 
     async def _send_heartbeat(self) -> None:
-        """Send a heartbeat message."""
+        """Send a heartbeat message, including local-gateway health.
+
+        A recent job outcome takes precedence (so a failure between heartbeats is
+        reflected immediately); otherwise we actively probe the gateway, which is
+        cheap when the connection is already established.
+        """
         if not self.sio or not self.sio.connected:
             return
+
+        healthy, reason = self._gateway_healthy, self._gateway_reason
+        if self.gateway_client is not None:
+            try:
+                healthy, reason = await self.gateway_client.check_gateway_health()
+            except Exception as e:
+                healthy, reason = False, str(e)
+            self._gateway_healthy, self._gateway_reason = healthy, reason
 
         heartbeat = {
             "type": "heartbeat",
             "timestamp": int(time.time() * 1000),
         }
+        if healthy is not None:
+            heartbeat["gateway_healthy"] = healthy
+            heartbeat["gateway_status"] = "HEALTHY" if healthy else "UNREACHABLE"
+            heartbeat["gateway_reason"] = reason
         await self.sio.emit("heartbeat", heartbeat)
 
     async def _handle_job(self, data: Dict[str, Any]) -> None:
@@ -324,6 +346,9 @@ class MoltbotConnector:
             if not response or not response.strip():
                 raise Exception("Empty response from gateway")
 
+            # Job succeeded → the local gateway is serving requests
+            self._gateway_healthy, self._gateway_reason = True, None
+
             # Send success response
             await self.sio.emit(
                 "job_response",
@@ -337,6 +362,9 @@ class MoltbotConnector:
             self._log(f"Job {job_id} completed successfully")
 
         except Exception as e:
+            # Job failed → record the local gateway as unhealthy so the next
+            # heartbeat surfaces it to the user with this reason.
+            self._gateway_healthy, self._gateway_reason = False, str(e)
             self._log(f"Job {job_id} failed: {e}", "error")
             # Send error response
             await self.sio.emit(

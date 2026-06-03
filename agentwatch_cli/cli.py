@@ -70,7 +70,14 @@ from .config import (
     DEFAULT_CONFIG_FILE,
 )
 from .connector import MoltbotConnector, test_gateway_connection
-from .service import install_service, uninstall_service, get_service_status
+from .service import (
+    install_service,
+    uninstall_service,
+    get_service_status,
+    is_service_installed,
+    restart_service,
+    stop_service,
+)
 
 def find_openclaw_config() -> Optional[Path]:
     """Find the OpenClaw config file."""
@@ -762,6 +769,44 @@ def service_status_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def restart_command(args: argparse.Namespace) -> int:
+    """Handle the restart command.
+
+    Restarts the connector so it drops any stale gateway connection and
+    reconnects fresh. If the connector is installed as a system service we
+    restart it; otherwise it's running in the foreground and we tell the user
+    how to restart it there.
+    """
+    if is_service_installed():
+        print("Restarting agentwatch-cli service...")
+        success, message = restart_service()
+        print(message)
+        if success:
+            print("Run 'agentwatch-cli status' to confirm the gateway is ONLINE.")
+        return 0 if success else 1
+
+    print("No system service is installed, so the connector is running in the foreground.")
+    print("To restart it: press Ctrl-C in the terminal running 'agentwatch-cli start',")
+    print("then run 'agentwatch-cli start' again.")
+    print()
+    print("Tip: 'agentwatch-cli install-service' runs it as a managed background service")
+    print("     so 'agentwatch-cli restart' can do this for you.")
+    return 0
+
+
+def stop_command(args: argparse.Namespace) -> int:
+    """Handle the stop command (stops the installed system service)."""
+    if is_service_installed():
+        print("Stopping agentwatch-cli service...")
+        success, message = stop_service()
+        print(message)
+        return 0 if success else 1
+
+    print("No system service is installed.")
+    print("If the connector is running in the foreground, press Ctrl-C in its terminal to stop it.")
+    return 0
+
+
 def main() -> int:
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -850,6 +895,22 @@ def main() -> int:
         "--user", help="User to run the service as (Linux only, default: current user)"
     )
 
+    # restart command
+    restart_parser = subparsers.add_parser(
+        "restart", help="Restart the connector (drops a stale gateway connection and reconnects)"
+    )
+    restart_parser.add_argument(
+        "--name", "-n", help="Config name (uses config-{name}.json, e.g., 'main', 'work')"
+    )
+
+    # stop command
+    stop_parser = subparsers.add_parser(
+        "stop", help="Stop the connector service"
+    )
+    stop_parser.add_argument(
+        "--name", "-n", help="Config name (uses config-{name}.json, e.g., 'main', 'work')"
+    )
+
     # uninstall-service command
     subparsers.add_parser(
         "uninstall-service", help="Uninstall the system service"
@@ -873,6 +934,8 @@ def main() -> int:
         "status": status_command,
         "config": config_command,
         "revoke": revoke_command,
+        "restart": restart_command,
+        "stop": stop_command,
         "install-service": install_service_command,
         "uninstall-service": uninstall_service_command,
         "service-status": service_status_command,

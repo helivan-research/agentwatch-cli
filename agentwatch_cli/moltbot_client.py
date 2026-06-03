@@ -16,6 +16,87 @@ from typing import List, Dict, Optional
 import websockets
 from websockets.client import WebSocketClientProtocol
 
+try:
+    from websockets.exceptions import ConnectionClosed
+except Exception:  # pragma: no cover - defensive across websockets versions
+    ConnectionClosed = getattr(websockets, "ConnectionClosed", Exception)
+
+
+# WebSocket close codes that typically indicate the gateway rejected the
+# connector's authorization rather than a transient network/process drop.
+_AUTH_CLOSE_CODES = {1008, 4001, 4003, 4401, 4403}
+
+# Substrings (case-insensitive) that suggest a drop was caused by a
+# connection/transport failure and is therefore worth retrying.
+_RETRYABLE_ERROR_TERMS = (
+    "connection", "connectionclosed", "close frame", "closed", "restart",
+    "keepalive", "ping timeout", "timed out", "1006", "1011", "1012",
+    "going away", "abnormal", "eof", "broken pipe", "reset by peer",
+)
+
+
+def _describe_ws_close(exc) -> tuple[Optional[int], Optional[str]]:
+    """Best-effort extraction of (close_code, close_reason) from a websockets
+    exception, defensively handling API differences across websockets versions."""
+    code = None
+    reason = None
+    # websockets >= 11 exposes Close objects via .rcvd / .sent
+    for attr in ("rcvd", "sent"):
+        close = getattr(exc, attr, None)
+        if close is not None:
+            if code is None:
+                code = getattr(close, "code", None)
+            reason = reason or getattr(close, "reason", None)
+    # Fall back to legacy direct attributes
+    if code is None:
+        code = getattr(exc, "code", None)
+    if reason is None:
+        reason = getattr(exc, "reason", None)
+    return code, reason
+
+
+def _is_connection_error(exc) -> bool:
+    """Whether an exception represents a (retryable) transport/connection drop."""
+    if isinstance(exc, (ConnectionClosed, ConnectionError, asyncio.TimeoutError, OSError)):
+        return True
+    text = str(exc).lower()
+    return any(term in text for term in _RETRYABLE_ERROR_TERMS)
+
+
+def _diagnose_gateway_drop(exc, close_code=None, close_reason=None) -> str:
+    """Produce a human-readable explanation + remediation for a dropped local
+    gateway connection, distinguishing authorization failures from transport drops."""
+    text = f"{close_reason or ''} {exc}".lower()
+    auth_terms = (
+        "unauthor", "forbidden", "denied", "permission", "scope", "token",
+        "auth", "invalid key", "not allowed", "401", "403",
+    )
+    looks_auth = (close_code in _AUTH_CLOSE_CODES) or any(t in text for t in auth_terms)
+
+    if looks_auth:
+        return (
+            f"Authorization rejected by the local gateway (close code {close_code}, "
+            f"reason: {close_reason or 'n/a'}). The gateway token is likely missing, "
+            "expired, or lacks the required 'operator.admin' scope. ACTION FOR CUSTOMER: "
+            "ensure the OpenClaw/Moltbot gateway is running, re-authorize the connector "
+            "with operator (admin) access, set the token via "
+            "`agentwatch-cli config --gateway-token <TOKEN>`, then re-test with "
+            "`agentwatch-cli status`."
+        )
+    if close_code == 1006 or "no close frame" in text:
+        return (
+            "Connection closed abnormally without a close handshake (code 1006). This "
+            "usually means the local gateway process stopped, restarted, crashed while "
+            "handling the request, or the connection idled out — not an authorization "
+            "problem. ACTION FOR CUSTOMER: confirm the gateway is running and reachable "
+            "at the configured URL, then re-test with `agentwatch-cli status`."
+        )
+    return (
+        f"Local gateway connection closed (code {close_code}, reason: "
+        f"{close_reason or 'n/a'}). ACTION FOR CUSTOMER: verify the gateway is running "
+        "and re-test with `agentwatch-cli status`."
+    )
+
 
 def _detect_framework_paths() -> tuple[Path, Path]:
     """
@@ -78,6 +159,10 @@ class MoltbotClient:
         self._ws: Optional[WebSocketClientProtocol] = None
         self._connected = False
 
+        # Diagnostics: most recent failure reasons, surfaced to the cloud/logs
+        self._last_connect_error: Optional[str] = None
+        self._last_drop_reason: Optional[str] = None
+
         # Session slots: limit concurrency without reusing sessions
         self._session_semaphore: Optional[asyncio.Semaphore] = None
         self._session_counter = 0
@@ -99,13 +184,42 @@ class MoltbotClient:
         self._session_semaphore = asyncio.Semaphore(pool_size)
         print(f"Session concurrency limit: {pool_size}")
 
+    async def _teardown_socket(self):
+        """Close the current socket and stop the receiver task (keeps diagnostics)."""
+        if self._receiver_task and self._receiver_task is not asyncio.current_task():
+            self._receiver_task.cancel()
+            try:
+                await self._receiver_task
+            except BaseException:
+                pass
+        self._receiver_task = None
+        if self._ws is not None:
+            try:
+                await self._ws.close()
+            except Exception:
+                pass
+            self._ws = None
+        self._connected = False
+
     async def connect(self) -> bool:
         """
-        Connect to the gateway and complete handshake.
+        Connect to the gateway and complete the handshake.
+
+        Guarded by a lock so that concurrent requests don't trigger a storm of
+        simultaneous reconnects when the connection drops.
 
         Returns:
             True if connection successful
         """
+        async with self._receiver_lock:
+            if self._connected and self._ws is not None:
+                return True
+            return await self._do_connect()
+
+    async def _do_connect(self) -> bool:
+        # Tear down any stale connection/receiver before reconnecting
+        await self._teardown_socket()
+        self._last_connect_error = None
         try:
             self._ws = await asyncio.wait_for(
                 websockets.connect(self.url),
@@ -145,19 +259,49 @@ class MoltbotClient:
 
                 if response.get("type") == "res" and response.get("ok"):
                     self._connected = True
+                    self._last_drop_reason = None
                     # Start background receiver task
                     self._receiver_task = asyncio.create_task(self._receive_messages())
                     return True
                 else:
                     error = response.get("error", response)
+                    self._last_connect_error = _diagnose_gateway_drop(
+                        f"connect handshake rejected: {error}",
+                        close_reason=str(error),
+                    )
                     print(f"Connect failed: {error}")
+                    print(f"  → {self._last_connect_error}")
+                    await self._teardown_socket()
                     return False
 
+            # Did not receive the expected challenge event
+            self._last_connect_error = (
+                "Unexpected handshake message from gateway (expected "
+                f"'connect.challenge', got {challenge.get('event') or challenge.get('type')!r})."
+            )
+            print(self._last_connect_error)
+            await self._teardown_socket()
+            return False
+
         except asyncio.TimeoutError:
+            self._last_connect_error = (
+                "Timed out during gateway handshake. The gateway may be unreachable, "
+                "not running, or not responding to the connect request."
+            )
             print("Connection timeout")
+            await self._teardown_socket()
+            return False
+        except ConnectionClosed as e:
+            code, reason = _describe_ws_close(e)
+            self._last_connect_error = _diagnose_gateway_drop(e, code, reason)
+            print(f"Connection closed during handshake (code={code}, reason={reason!r})")
+            print(f"  → {self._last_connect_error}")
+            await self._teardown_socket()
             return False
         except Exception as e:
+            self._last_connect_error = f"Connection error: {e}"
             print(f"Connection error: {e}")
+            await self._teardown_socket()
             return False
 
     async def _receive_messages(self):
@@ -201,12 +345,35 @@ class MoltbotClient:
                                     pass
                                 break
 
+                except ConnectionClosed as e:
+                    code, reason = _describe_ws_close(e)
+                    self._last_drop_reason = _diagnose_gateway_drop(e, code, reason)
+                    if self._connected:
+                        print(f"Gateway connection closed (code={code}, reason={reason!r})")
+                        print(f"  → {self._last_drop_reason}")
+                    break
                 except Exception as e:
                     if self._connected:
+                        self._last_drop_reason = f"Receiver error: {e}"
                         print(f"Receiver error: {e}")
                     break
         except asyncio.CancelledError:
             pass
+        finally:
+            # The connection is no longer usable: mark it down so the next
+            # request reconnects, and fail any in-flight requests immediately
+            # instead of letting them block until their per-request timeout.
+            self._connected = False
+            self._fail_pending_requests(self._last_drop_reason or "gateway connection lost")
+
+    def _fail_pending_requests(self, reason: str):
+        """Push a connection-lost sentinel to every in-flight request so it fails
+        fast (and is then retried) rather than waiting for its full timeout."""
+        for request_info in list(self._pending_requests.values()):
+            try:
+                request_info["queue"].put_nowait({"type": "_connection_lost", "error": reason})
+            except Exception:
+                pass
 
     def _capture_agent_snapshot(self) -> Dict:
         """Capture a snapshot of the main agent's state for consistent evaluation."""
@@ -365,7 +532,11 @@ class MoltbotClient:
                         if attempt < max_retries - 1:
                             await asyncio.sleep(2 ** attempt)  # Exponential backoff
                             continue
-                        raise Exception("Failed to connect to Moltbot")
+                        detail = self._last_connect_error
+                        raise Exception(
+                            "Failed to connect to Moltbot"
+                            + (f": {detail}" if detail else "")
+                        )
 
                 # Acquire slot from semaphore (limits concurrency)
                 async with self._session_semaphore:
@@ -381,17 +552,21 @@ class MoltbotClient:
 
             except Exception as e:
                 last_error = e
-                error_str = str(e).lower()
 
-                # Check if it's a retryable error
-                is_connection_error = any(x in error_str for x in ["connection", "restart", "closed", "keepalive", "ping timeout", "1011"])
-                is_empty_response = "empty response" in error_str
+                # Check if it's a retryable error (type-aware, so close errors like
+                # "no close frame received or sent" are recognised and recovered from)
+                is_connection_error = _is_connection_error(e)
+                is_empty_response = "empty response" in str(e).lower()
 
                 if is_connection_error or is_empty_response:
                     if attempt < max_retries - 1:
                         if is_connection_error:
-                            # Reset connection state for connection errors
-                            self._connected = False
+                            # Drop the dead socket so the next attempt reconnects
+                            print(
+                                f"Connection error on attempt {attempt + 1} ({e}); "
+                                "reconnecting and retrying..."
+                            )
+                            await self._teardown_socket()
                         if is_empty_response:
                             print(f"Warning: Empty response on attempt {attempt + 1}, retrying...")
                         await asyncio.sleep(2 ** attempt)
@@ -400,8 +575,12 @@ class MoltbotClient:
                 # Not a retryable error, raise immediately
                 raise
 
-        # All retries exhausted
-        raise Exception(f"Failed after {max_retries} attempts: {last_error}")
+        # All retries exhausted — surface the most actionable diagnosis we have
+        detail = self._last_drop_reason or self._last_connect_error
+        message = f"Failed after {max_retries} attempts: {last_error}"
+        if detail:
+            message += f" | {detail}"
+        raise Exception(message)
 
     async def _send_chat_request(self, messages: List[Dict[str, str]], session_key: str, session_id: str) -> str:
         """Internal method to send chat request without retry logic."""
@@ -455,6 +634,10 @@ class MoltbotClient:
                         raise asyncio.TimeoutError()
 
                     data = await asyncio.wait_for(request_info["queue"].get(), timeout=remaining_timeout)
+
+                    # Connection dropped mid-request (pushed by the receiver task)
+                    if data.get("type") == "_connection_lost":
+                        raise ConnectionError(data.get("error") or "gateway connection lost")
 
                     if data.get("type") == "res" and data.get("id") == req_id:
                         if not data.get("ok"):
@@ -516,6 +699,30 @@ class MoltbotClient:
             return True
         except Exception:
             return False
+
+    async def check_gateway_health(self) -> tuple[bool, Optional[str]]:
+        """
+        Probe the local gateway and return (healthy, reason).
+
+        Reuses the connection diagnostics captured during connect()/recv so the
+        reason distinguishes an authorization rejection from a transport drop.
+
+        Returns:
+            (True, None) if the gateway is reachable, otherwise
+            (False, <human-readable reason>).
+        """
+        try:
+            ok = await self.health_check()
+        except Exception as e:
+            return False, str(e)
+        if ok:
+            return True, None
+        return (
+            False,
+            self._last_connect_error
+            or self._last_drop_reason
+            or "Local gateway is not reachable",
+        )
 
     async def disconnect(self):
         """Disconnect from Moltbot."""

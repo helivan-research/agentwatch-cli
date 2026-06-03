@@ -157,6 +157,8 @@ agentwatch-cli start
 | `enroll` | Enroll with an enrollment code from AgentWatch |
 | `start` | Start the connector manually |
 | `status` | Check connector status and gateway connectivity |
+| `restart` | Restart the connector (drops a stale gateway connection and reconnects) |
+| `stop` | Stop the connector service |
 | `config` | Update configuration settings |
 | `revoke` | Revoke enrollment and clear credentials |
 | `install-service` | Install as a system service (auto-start) |
@@ -184,6 +186,18 @@ agentwatch-cli start --gateway-url http://192.168.1.100:18789
 # With explicit gateway token
 agentwatch-cli start --gateway-token your-token-here
 ```
+
+### restart
+
+Restart the connector so it drops any stale gateway connection and reconnects.
+Useful after upgrading, or if the connector ever stops responding.
+
+```bash
+agentwatch-cli restart
+```
+
+If the connector is installed as a service, this restarts the service. If it's
+running in the foreground, it tells you how to restart it there.
 
 ### status
 
