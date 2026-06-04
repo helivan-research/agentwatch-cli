@@ -521,8 +521,8 @@ def _start_single_connector(config_name: Optional[str], args: argparse.Namespace
         return 1
 
     # Apply command line overrides
-    if getattr(args, "command", None):
-        config.command = args.command
+    if getattr(args, "agent_command", None):
+        config.command = args.agent_command
     if args.gateway_url:
         config.gateway_url = args.gateway_url
     if args.gateway_token:
@@ -681,8 +681,8 @@ def config_command(args: argparse.Namespace) -> int:
     config_name = getattr(args, 'name', None)
     config = load_config(name=config_name)
 
-    if getattr(args, "command", None) is not None:
-        config.command = args.command or None
+    if getattr(args, "agent_command", None) is not None:
+        config.command = args.agent_command or None
         print(f"Set command = {config.command!r}")
 
     if getattr(args, "command_timeout", None):
@@ -862,7 +862,7 @@ def main() -> int:
         "--gateway-token", help="Override gateway token"
     )
     start_parser.add_argument(
-        "--command",
+        "--command", dest="agent_command",
         help='Run a local command per job instead of a gateway, e.g. --command "claude -p" '
              '(the survey prompt is appended as the final argument; stdout is the answer)',
     )
@@ -892,7 +892,7 @@ def main() -> int:
         "--agentwatch-url", help="Set AgentWatch cloud URL"
     )
     config_parser.add_argument(
-        "--command",
+        "--command", dest="agent_command",
         help='Set the local command to run per job (e.g. "claude -p"). Pass "" to clear and use a gateway instead.',
     )
     config_parser.add_argument(
