@@ -95,9 +95,10 @@ class ConnectorConfig:
     gateway_token: Optional[str] = None
 
     # Command mode: instead of bridging to a Moltbot/OpenClaw gateway, run a local
-    # command per job (the survey prompt is appended as the final argument) and use
-    # its stdout as the agent's answer. e.g. command="claude -p". When set, gateway_*
-    # is ignored. This lets any local CLI agent be monitored with no public endpoint.
+    # command per job (the survey prompt is sent on stdin) and use its stdout as the
+    # agent's answer, e.g. command="claude -p --disallowed-tools Write Edit Bash".
+    # Each job runs in a throwaway temp dir. When set, gateway_* is ignored. Lets any
+    # local CLI agent be monitored with no public endpoint.
     command: Optional[str] = None
     command_timeout: int = 120
 

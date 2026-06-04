@@ -863,8 +863,9 @@ def main() -> int:
     )
     start_parser.add_argument(
         "--command", dest="agent_command",
-        help='Run a local command per job instead of a gateway, e.g. --command "claude -p" '
-             '(the survey prompt is appended as the final argument; stdout is the answer)',
+        help='Run a local command per job instead of a gateway, e.g. '
+             '--command "claude -p --disallowed-tools Write Edit Bash" '
+             '(the survey prompt is sent on stdin; stdout is the answer)',
     )
 
     # status command

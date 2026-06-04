@@ -4,6 +4,8 @@ Main connector class that bridges AgentWatch cloud to local Moltbot gateway.
 
 import asyncio
 import shlex
+import shutil
+import tempfile
 import time
 from typing import Dict, Any, Optional, Callable
 import socketio
@@ -308,9 +310,11 @@ class MoltbotConnector:
     async def _run_command(self, messages: list) -> str:
         """Run the configured local command for one job and return its stdout.
 
-        The last user message (the survey prompt) is appended as the final
-        argument, e.g. `claude -p "<prompt>"`. Each job spawns a fresh process,
-        which gives the per-question isolation the survey wants.
+        The survey prompt (last user message) is sent to the command on **stdin**
+        — so the command string can carry tool/permission flags freely, e.g.
+        `claude -p --disallowed-tools Write Edit Bash`. Each job runs a fresh
+        process in a throwaway temp directory (per-question isolation; any stray
+        files the agent writes can't touch the user's project).
         """
         prompt = ""
         for msg in reversed(messages):
@@ -320,22 +324,29 @@ class MoltbotConnector:
         if not prompt:
             raise Exception("No user message in job")
 
-        args = shlex.split(self.config.command) + [prompt]
-        proc = await asyncio.create_subprocess_exec(
-            *args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        args = shlex.split(self.config.command)
+        workdir = tempfile.mkdtemp(prefix="agentwatch-job-")
         try:
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=self.config.command_timeout
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=workdir,
             )
-        except asyncio.TimeoutError:
             try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-            raise Exception(f"command timed out after {self.config.command_timeout}s")
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(input=prompt.encode()),
+                    timeout=self.config.command_timeout,
+                )
+            except asyncio.TimeoutError:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+                raise Exception(f"command timed out after {self.config.command_timeout}s")
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
 
         text = stdout.decode(errors="replace").strip()
         if not text:
