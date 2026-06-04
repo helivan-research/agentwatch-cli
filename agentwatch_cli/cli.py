@@ -521,26 +521,32 @@ def _start_single_connector(config_name: Optional[str], args: argparse.Namespace
         return 1
 
     # Apply command line overrides
+    if getattr(args, "command", None):
+        config.command = args.command
     if args.gateway_url:
         config.gateway_url = args.gateway_url
     if args.gateway_token:
         config.gateway_token = args.gateway_token
 
     print(f"Starting connector for agent: {config.agent_name}")
-    print(f"Local gateway: {config.gateway_url}")
+    if config.command:
+        print(f"Agent command: {config.command} <prompt>")
+    else:
+        print(f"Local gateway: {config.gateway_url}")
     print(f"AgentWatch cloud: {config.agentwatch_url}")
     print()
 
     # Test gateway connection first
     async def test_and_run():
-        # Test gateway
-        if not await test_gateway_connection(config):
-            print(f"Cannot connect to local gateway at {config.gateway_url}")
-            print("Please make sure your Moltbot gateway is running.")
-            return 1
-
-        print("Local gateway connection: OK")
-        print()
+        # In command mode there's no gateway to test — the connector runs the
+        # command per job.
+        if not config.command:
+            if not await test_gateway_connection(config):
+                print(f"Cannot connect to local gateway at {config.gateway_url}")
+                print("Please make sure your Moltbot gateway is running.")
+                return 1
+            print("Local gateway connection: OK")
+            print()
 
         # Start connector
         connector = MoltbotConnector(config)
@@ -674,6 +680,14 @@ def config_command(args: argparse.Namespace) -> int:
     """Handle the config command."""
     config_name = getattr(args, 'name', None)
     config = load_config(name=config_name)
+
+    if getattr(args, "command", None) is not None:
+        config.command = args.command or None
+        print(f"Set command = {config.command!r}")
+
+    if getattr(args, "command_timeout", None):
+        config.command_timeout = args.command_timeout
+        print(f"Set command_timeout = {args.command_timeout}")
 
     if args.gateway_url:
         config.gateway_url = args.gateway_url
@@ -847,6 +861,11 @@ def main() -> int:
     start_parser.add_argument(
         "--gateway-token", help="Override gateway token"
     )
+    start_parser.add_argument(
+        "--command",
+        help='Run a local command per job instead of a gateway, e.g. --command "claude -p" '
+             '(the survey prompt is appended as the final argument; stdout is the answer)',
+    )
 
     # status command
     status_parser = subparsers.add_parser(
@@ -871,6 +890,13 @@ def main() -> int:
     )
     config_parser.add_argument(
         "--agentwatch-url", help="Set AgentWatch cloud URL"
+    )
+    config_parser.add_argument(
+        "--command",
+        help='Set the local command to run per job (e.g. "claude -p"). Pass "" to clear and use a gateway instead.',
+    )
+    config_parser.add_argument(
+        "--command-timeout", type=int, help="Max seconds to wait for the command per job (default 120)"
     )
 
     # revoke command

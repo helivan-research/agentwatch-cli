@@ -94,6 +94,13 @@ class ConnectorConfig:
     gateway_url: str = "ws://127.0.0.1:18789"
     gateway_token: Optional[str] = None
 
+    # Command mode: instead of bridging to a Moltbot/OpenClaw gateway, run a local
+    # command per job (the survey prompt is appended as the final argument) and use
+    # its stdout as the agent's answer. e.g. command="claude -p". When set, gateway_*
+    # is ignored. This lets any local CLI agent be monitored with no public endpoint.
+    command: Optional[str] = None
+    command_timeout: int = 120
+
     def is_enrolled(self) -> bool:
         """Check if the connector is enrolled."""
         return bool(self.connector_id and (self.private_key or self.secret) and self.agent_id)

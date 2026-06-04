@@ -3,6 +3,7 @@ Main connector class that bridges AgentWatch cloud to local Moltbot gateway.
 """
 
 import asyncio
+import shlex
 import time
 from typing import Dict, Any, Optional, Callable
 import socketio
@@ -96,35 +97,40 @@ class MoltbotConnector:
             self._log("Connector is not enrolled. Run 'agentwatch-cli enroll' first.", "error")
             return False
 
-        # Initialize Moltbot client (used for health checks)
-        gateway_token = get_effective_gateway_token(self.config)
-        self.gateway_client = MoltbotClient(
-            url=self.config.gateway_url,
-            token=gateway_token,
-        )
+        if self.config.command:
+            # Command mode: no gateway to reach; jobs run the local command.
+            self._gateway_healthy, self._gateway_reason = True, None
+            self._log(f"Command mode: running `{self.config.command} <prompt>` per job")
+        else:
+            # Initialize Moltbot client (used for health checks)
+            gateway_token = get_effective_gateway_token(self.config)
+            self.gateway_client = MoltbotClient(
+                url=self.config.gateway_url,
+                token=gateway_token,
+            )
 
-        # Set up HTTP client for chat completions
-        http_url = self.config.gateway_url.rstrip("/")
-        if http_url.startswith("ws://"):
-            http_url = "http://" + http_url[5:]
-        elif http_url.startswith("wss://"):
-            http_url = "https://" + http_url[6:]
-        elif not http_url.startswith("http://") and not http_url.startswith("https://"):
-            http_url = "http://" + http_url
-        self._http_url = http_url + "/v1/chat/completions"
+            # Set up HTTP client for chat completions
+            http_url = self.config.gateway_url.rstrip("/")
+            if http_url.startswith("ws://"):
+                http_url = "http://" + http_url[5:]
+            elif http_url.startswith("wss://"):
+                http_url = "https://" + http_url[6:]
+            elif not http_url.startswith("http://") and not http_url.startswith("https://"):
+                http_url = "http://" + http_url
+            self._http_url = http_url + "/v1/chat/completions"
 
-        headers = {"Content-Type": "application/json"}
-        if gateway_token:
-            headers["Authorization"] = f"Bearer {gateway_token}"
-        self._http_client = httpx.AsyncClient(timeout=120.0, headers=headers)
+            headers = {"Content-Type": "application/json"}
+            if gateway_token:
+                headers["Authorization"] = f"Bearer {gateway_token}"
+            self._http_client = httpx.AsyncClient(timeout=120.0, headers=headers)
 
-        # Test gateway connection first
-        if not await self.gateway_client.health_check():
-            self._log(f"Cannot connect to local gateway at {self.config.gateway_url}", "error")
-            self._log("Make sure your Moltbot gateway is running.", "error")
-            return False
+            # Test gateway connection first
+            if not await self.gateway_client.health_check():
+                self._log(f"Cannot connect to local gateway at {self.config.gateway_url}", "error")
+                self._log("Make sure your Moltbot gateway is running.", "error")
+                return False
 
-        self._log(f"Local gateway at {self.config.gateway_url} is reachable")
+            self._log(f"Local gateway at {self.config.gateway_url} is reachable")
 
         # Initialize Socket.IO client
         self.sio = socketio.AsyncClient(
@@ -299,11 +305,50 @@ class MoltbotConnector:
             heartbeat["gateway_reason"] = reason
         await self.sio.emit("heartbeat", heartbeat)
 
+    async def _run_command(self, messages: list) -> str:
+        """Run the configured local command for one job and return its stdout.
+
+        The last user message (the survey prompt) is appended as the final
+        argument, e.g. `claude -p "<prompt>"`. Each job spawns a fresh process,
+        which gives the per-question isolation the survey wants.
+        """
+        prompt = ""
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                prompt = msg.get("content", "") or ""
+                break
+        if not prompt:
+            raise Exception("No user message in job")
+
+        args = shlex.split(self.config.command) + [prompt]
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=self.config.command_timeout
+            )
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            raise Exception(f"command timed out after {self.config.command_timeout}s")
+
+        text = stdout.decode(errors="replace").strip()
+        if not text:
+            err = stderr.decode(errors="replace").strip()
+            raise Exception(f"command produced no output{': ' + err if err else ''}")
+        return text
+
     async def _handle_job(self, data: Dict[str, Any]) -> None:
         """
         Handle an incoming job request from the cloud.
 
-        Uses HTTP POST to the gateway's OpenAI-compatible /v1/chat/completions
+        In command mode, runs the configured local command per job. Otherwise
+        uses HTTP POST to the gateway's OpenAI-compatible /v1/chat/completions
         endpoint. Each request is independent — no shared connection state.
 
         Args:
@@ -327,21 +372,25 @@ class MoltbotConnector:
             if system_prompt:
                 messages = [{"role": "system", "content": system_prompt}] + messages
 
-            # Forward to local gateway via HTTP (OpenAI-compatible endpoint)
-            if not self._http_client or not self._http_url:
-                raise Exception("HTTP client not initialized")
+            if self.config.command:
+                # Command mode: run the local agent command per job.
+                response = await self._run_command(messages)
+            else:
+                # Forward to local gateway via HTTP (OpenAI-compatible endpoint)
+                if not self._http_client or not self._http_url:
+                    raise Exception("HTTP client not initialized")
 
-            payload = {
-                "model": "openclaw",
-                "messages": messages,
-                "temperature": temperature,
-                "max_tokens": max_tokens,
-            }
+                payload = {
+                    "model": "openclaw",
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                }
 
-            resp = await self._http_client.post(self._http_url, json=payload)
-            resp.raise_for_status()
-            result = resp.json()
-            response = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+                resp = await self._http_client.post(self._http_url, json=payload)
+                resp.raise_for_status()
+                result = resp.json()
+                response = result.get("choices", [{}])[0].get("message", {}).get("content", "")
 
             if not response or not response.strip():
                 raise Exception("Empty response from gateway")
