@@ -96,11 +96,18 @@ class ConnectorConfig:
 
     # Command mode: instead of bridging to a Moltbot/OpenClaw gateway, run a local
     # command per job (the survey prompt is sent on stdin) and use its stdout as the
-    # agent's answer, e.g. command="claude -p --disallowed-tools Write Edit Bash".
-    # Each job runs in a throwaway temp dir. When set, gateway_* is ignored. Lets any
+    # agent's answer, e.g. command="claude -p". When set, gateway_* is ignored. Lets any
     # local CLI agent be monitored with no public endpoint.
     command: Optional[str] = None
     command_timeout: int = 120
+
+    # Plan-probe mode: when set, jobs run in this real project directory (loads the
+    # codebase + ./CLAUDE.md + settings, like a normal session) instead of a throwaway
+    # temp dir. For `claude` commands the connector adds read-only plan mode and forks
+    # the session, so the agent plans against its true state without editing files or
+    # touching its ongoing session history. Leave `command` as the bare base
+    # (e.g. "claude -p") — the connector appends the safety/session flags itself.
+    working_dir: Optional[str] = None
 
     def is_enrolled(self) -> bool:
         """Check if the connector is enrolled."""

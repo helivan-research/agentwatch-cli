@@ -689,6 +689,10 @@ def config_command(args: argparse.Namespace) -> int:
         config.command_timeout = args.command_timeout
         print(f"Set command_timeout = {args.command_timeout}")
 
+    if getattr(args, "working_dir", None) is not None:
+        config.working_dir = args.working_dir or None
+        print(f"Set working_dir = {config.working_dir!r}")
+
     if args.gateway_url:
         config.gateway_url = args.gateway_url
         print(f"Set gateway_url = {args.gateway_url}")
@@ -898,6 +902,12 @@ def main() -> int:
     )
     config_parser.add_argument(
         "--command-timeout", type=int, help="Max seconds to wait for the command per job (default 120)"
+    )
+    config_parser.add_argument(
+        "--working-dir",
+        help='Real project directory to run plan jobs in (e.g. "~/my-repo"). The agent plans '
+             'against its true codebase + CLAUDE.md; for `claude` the connector adds read-only '
+             'plan mode and forks the session. Pass "" to clear (use a throwaway temp dir).',
     )
 
     # revoke command

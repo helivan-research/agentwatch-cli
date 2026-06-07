@@ -320,14 +320,63 @@ class MoltbotConnector:
             heartbeat["gateway_reason"] = reason
         await self.sio.emit("heartbeat", heartbeat)
 
-    async def _run_command(self, messages: list) -> str:
+    @staticmethod
+    def _project_slug_dir(workdir: str) -> Path:
+        """Claude Code stores a dir's sessions under ~/.claude/projects/<slug>/ where the
+        slug is the absolute path with separators replaced by '-'."""
+        abspath = os.path.abspath(os.path.expanduser(workdir))
+        slug = abspath.replace(os.sep, "-")
+        return Path.home() / ".claude" / "projects" / slug
+
+    def _snapshot_sessions(self, workdir: str) -> set:
+        d = self._project_slug_dir(workdir)
+        return set(glob.glob(str(d / "*.jsonl"))) if d.exists() else set()
+
+    def _cleanup_new_sessions(self, workdir: str, before: set) -> None:
+        """Delete any session transcripts created during this run (the fork), so the
+        monitoring call leaves zero trace and `--continue` never picks up a prior probe."""
+        d = self._project_slug_dir(workdir)
+        for path in glob.glob(str(d / "*.jsonl")):
+            if path not in before:
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+
+    def _build_claude_plan_args(self, base_args: list, session_mode: str, session_id) -> list:
+        """Augment a `claude` base command into a read-only, forked, session-aware plan run."""
+        args = list(base_args)
+        joined = " ".join(args)
+        # Session targeting (default: continue the most-recent session in the project dir).
+        mode = session_mode or "continue"
+        if mode == "continue" and "--continue" not in args and "-c" not in args:
+            args.append("--continue")
+        elif mode == "resume" and session_id and "--resume" not in args:
+            args.extend(["--resume", str(session_id)])
+        # 'fresh' adds no session flag.
+        # Fork so the original session's transcript is never modified.
+        if "--fork-session" not in args:
+            args.append("--fork-session")
+        # Read-only: research + plan, no edits.
+        if "--permission-mode" not in joined:
+            args.extend(["--permission-mode", "plan"])
+        return args
+
+    async def _run_command(
+        self,
+        messages: list,
+        session_mode: Optional[str] = None,
+        session_id: Optional[str] = None,
+    ) -> str:
         """Run the configured local command for one job and return its stdout.
 
-        The survey prompt (last user message) is sent to the command on **stdin**
-        — so the command string can carry tool/permission flags freely, e.g.
-        `claude -p --disallowed-tools Write Edit Bash`. Each job runs a fresh
-        process in a throwaway temp directory (per-question isolation; any stray
-        files the agent writes can't touch the user's project).
+        The prompt (last user message) is sent on **stdin**. Two modes:
+        - No `working_dir`: run in a throwaway temp dir (isolated; back-compat).
+        - `working_dir` set: run in the real project dir so the agent plans against its
+          true codebase + CLAUDE.md. For a `claude` command we add `--permission-mode plan`
+          (read-only), `--fork-session` (original session untouched) and session targeting
+          (continue/resume/fresh); any forked transcript is deleted afterward so the run is
+          invisible to the agent's ongoing context.
         """
         prompt = ""
         for msg in reversed(messages):
@@ -338,7 +387,22 @@ class MoltbotConnector:
             raise Exception("No user message in job")
 
         args = shlex.split(self.config.command)
-        workdir = tempfile.mkdtemp(prefix="agentwatch-job-")
+        working_dir = self.config.working_dir
+        # Grounded planning (reading a real repo) is slower than answering in an empty dir.
+        timeout = max(self.config.command_timeout, 300) if working_dir else self.config.command_timeout
+        temp_dir = None
+        fork_before = None
+
+        if working_dir:
+            workdir = os.path.abspath(os.path.expanduser(working_dir))
+            is_claude = bool(args) and os.path.basename(args[0]) == "claude"
+            if is_claude:
+                args = self._build_claude_plan_args(args, session_mode, session_id)
+                fork_before = self._snapshot_sessions(workdir)
+        else:
+            workdir = tempfile.mkdtemp(prefix="agentwatch-job-")
+            temp_dir = workdir
+
         try:
             proc = await asyncio.create_subprocess_exec(
                 *args,
@@ -350,20 +414,27 @@ class MoltbotConnector:
             try:
                 stdout, stderr = await asyncio.wait_for(
                     proc.communicate(input=prompt.encode()),
-                    timeout=self.config.command_timeout,
+                    timeout=timeout,
                 )
             except asyncio.TimeoutError:
                 try:
                     proc.kill()
                 except ProcessLookupError:
                     pass
-                raise Exception(f"command timed out after {self.config.command_timeout}s")
+                raise Exception(f"command timed out after {timeout}s")
         finally:
-            shutil.rmtree(workdir, ignore_errors=True)
+            if temp_dir:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            if fork_before is not None:
+                self._cleanup_new_sessions(workdir, fork_before)
 
         text = stdout.decode(errors="replace").strip()
         if not text:
             err = stderr.decode(errors="replace").strip()
+            # --continue/--resume fails when no such session exists → retry once, fresh.
+            if working_dir and (session_mode or "continue") in ("continue", "resume"):
+                self._log(f"plan run had no session ({err[:120]}) — retrying fresh", "warn")
+                return await self._run_command(messages, session_mode="fresh")
             raise Exception(f"command produced no output{': ' + err if err else ''}")
         return text
 
@@ -391,6 +462,9 @@ class MoltbotConnector:
             temperature = data.get("temperature", 0.7)
             max_tokens = data.get("max_tokens", 4000)
             system_prompt = data.get("system_prompt")
+            # Plan-probe session targeting (only used in working_dir + claude mode).
+            session_mode = data.get("session_mode")
+            session_id = data.get("session_id")
 
             # Prepend system prompt if provided
             if system_prompt:
@@ -398,7 +472,7 @@ class MoltbotConnector:
 
             if self.config.command:
                 # Command mode: run the local agent command per job.
-                response = await self._run_command(messages)
+                response = await self._run_command(messages, session_mode, session_id)
             else:
                 # Forward to local gateway via HTTP (OpenAI-compatible endpoint)
                 if not self._http_client or not self._http_url:
