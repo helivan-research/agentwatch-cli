@@ -320,13 +320,12 @@ class MoltbotConnector:
             heartbeat["gateway_reason"] = reason
         await self.sio.emit("heartbeat", heartbeat)
 
-    @staticmethod
-    def _project_slug_dir(workdir: str) -> Path:
-        """Claude Code stores a dir's sessions under ~/.claude/projects/<slug>/ where the
+    def _project_slug_dir(self, workdir: str) -> Path:
+        """Claude Code stores a dir's sessions under <config>/projects/<slug>/ where the
         slug is the absolute path with separators replaced by '-'."""
         abspath = os.path.abspath(os.path.expanduser(workdir))
         slug = abspath.replace(os.sep, "-")
-        return Path.home() / ".claude" / "projects" / slug
+        return self._claude_config_root() / "projects" / slug
 
     def _snapshot_sessions(self, workdir: str) -> set:
         d = self._project_slug_dir(workdir)
@@ -528,10 +527,17 @@ class MoltbotConnector:
                 },
             )
 
+    @staticmethod
+    def _claude_config_root() -> Path:
+        """Claude Code's config root: $CLAUDE_CONFIG_DIR if set, else ~/.claude.
+        Sessions live under <config>/projects/<slug>/<id>.jsonl."""
+        config = os.environ.get("CLAUDE_CONFIG_DIR")
+        return Path(config).expanduser() if config else Path.home() / ".claude"
+
     def _claude_projects_dir(self) -> Path:
         """The Claude Code transcript root on this machine (override via env for tests)."""
         override = os.environ.get("CLAUDE_PROJECTS_DIR")
-        return Path(override) if override else Path.home() / ".claude" / "projects"
+        return Path(override) if override else self._claude_config_root() / "projects"
 
     @staticmethod
     def _session_title(path: str) -> str:
@@ -566,6 +572,7 @@ class MoltbotConnector:
         self._log(f"Received list_sessions: {job_id}")
         try:
             base = self._claude_projects_dir()
+            self._log(f"list_sessions scanning {base} (exists={base.exists()})")
             sessions = []
             for path in glob.glob(str(base / "*" / "*.jsonl")):
                 try:
@@ -580,6 +587,7 @@ class MoltbotConnector:
                     "cwd": os.path.basename(os.path.dirname(path)),
                 })
             sessions.sort(key=lambda s: s["mtime"], reverse=True)
+            self._log(f"list_sessions {job_id} found {len(sessions)} sessions in {base}")
             await self.sio.emit("sessions_response", {
                 "type": "sessions_response",
                 "job_id": job_id,
