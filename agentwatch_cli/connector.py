@@ -349,13 +349,17 @@ class MoltbotConnector:
         joined = " ".join(args)
         # Session targeting (default: continue the most-recent session in the project dir).
         mode = session_mode or "continue"
+        resuming = False
         if mode == "continue" and "--continue" not in args and "-c" not in args:
             args.append("--continue")
+            resuming = True
         elif mode == "resume" and session_id and "--resume" not in args:
             args.extend(["--resume", str(session_id)])
-        # 'fresh' adds no session flag.
-        # Fork so the original session's transcript is never modified.
-        if "--fork-session" not in args:
+            resuming = True
+        # 'fresh' adds no session flag — it's already a brand-new isolated session.
+        # --fork-session only works WITH --resume/--continue, and is what keeps the
+        # original session's transcript untouched when we resume it.
+        if resuming and "--fork-session" not in args:
             args.append("--fork-session")
         # Read-only: research + plan, no edits.
         if "--permission-mode" not in joined:
