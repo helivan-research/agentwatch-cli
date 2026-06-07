@@ -3,10 +3,15 @@ Main connector class that bridges AgentWatch cloud to local Moltbot gateway.
 """
 
 import asyncio
+import base64
+import glob
+import json
+import os
 import shlex
 import shutil
 import tempfile
 import time
+from pathlib import Path
 from typing import Dict, Any, Optional, Callable
 import socketio
 import httpx
@@ -206,6 +211,14 @@ class MoltbotConnector:
         @self.sio.on("job")
         async def on_job(data: Dict[str, Any]):
             await self._handle_job(data)
+
+        @self.sio.on("list_sessions")
+        async def on_list_sessions(data: Dict[str, Any]):
+            await self._handle_list_sessions(data)
+
+        @self.sio.on("fetch_transcript")
+        async def on_fetch_transcript(data: Dict[str, Any]):
+            await self._handle_fetch_transcript(data)
 
         @self.sio.on("health_check")
         async def on_health_check(data: Dict[str, Any]):
@@ -436,6 +449,108 @@ class MoltbotConnector:
                     "error": str(e),
                 },
             )
+
+    def _claude_projects_dir(self) -> Path:
+        """The Claude Code transcript root on this machine (override via env for tests)."""
+        override = os.environ.get("CLAUDE_PROJECTS_DIR")
+        return Path(override) if override else Path.home() / ".claude" / "projects"
+
+    @staticmethod
+    def _session_title(path: str) -> str:
+        """Best-effort title for a transcript: the ai-title line, else first user message."""
+        first_user = None
+        try:
+            with open(path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        o = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if o.get("type") == "ai-title" and o.get("aiTitle"):
+                        return str(o["aiTitle"])[:120]
+                    if first_user is None and o.get("type") == "user":
+                        msg = (o.get("message") or {}).get("content")
+                        if isinstance(msg, str) and msg.strip():
+                            first_user = msg.strip()[:120]
+        except OSError:
+            return "(untitled session)"
+        return first_user or "(untitled session)"
+
+    async def _handle_list_sessions(self, data: Dict[str, Any]) -> None:
+        """List local Claude Code sessions (newest first) for the cloud session picker."""
+        job_id = data.get("job_id")
+        if not job_id:
+            self._log("Received list_sessions without job_id", "error")
+            return
+        self._log(f"Received list_sessions: {job_id}")
+        try:
+            base = self._claude_projects_dir()
+            sessions = []
+            for path in glob.glob(str(base / "*" / "*.jsonl")):
+                try:
+                    st = os.stat(path)
+                except OSError:
+                    continue
+                sessions.append({
+                    "session_id": Path(path).stem,
+                    "title": self._session_title(path),
+                    "mtime": int(st.st_mtime * 1000),
+                    "size_bytes": st.st_size,
+                    "cwd": os.path.basename(os.path.dirname(path)),
+                })
+            sessions.sort(key=lambda s: s["mtime"], reverse=True)
+            await self.sio.emit("sessions_response", {
+                "type": "sessions_response",
+                "job_id": job_id,
+                "success": True,
+                "sessions": sessions,
+            })
+            self._log(f"list_sessions {job_id} returned {len(sessions)} sessions")
+        except Exception as e:
+            self._log(f"list_sessions {job_id} failed: {e}", "error")
+            await self.sio.emit("sessions_response", {
+                "type": "sessions_response",
+                "job_id": job_id,
+                "success": False,
+                "error": str(e),
+            })
+
+    async def _handle_fetch_transcript(self, data: Dict[str, Any]) -> None:
+        """Read a local transcript by session id and return it base64-encoded."""
+        job_id = data.get("job_id")
+        if not job_id:
+            self._log("Received fetch_transcript without job_id", "error")
+            return
+        session_id = data.get("session_id")
+        self._log(f"Received fetch_transcript: {job_id} (session {session_id})")
+        try:
+            if not session_id:
+                raise Exception("No session_id in request")
+            base = self._claude_projects_dir()
+            # Session ids are unique across project dirs; take the first match.
+            matches = glob.glob(str(base / "*" / f"{session_id}.jsonl"))
+            if not matches:
+                raise FileNotFoundError(f"Session not found: {session_id}")
+            raw = Path(matches[0]).read_bytes()
+            await self.sio.emit("transcript_response", {
+                "type": "transcript_response",
+                "job_id": job_id,
+                "success": True,
+                "data_b64": base64.b64encode(raw).decode("ascii"),
+                "size_bytes": len(raw),
+            })
+            self._log(f"fetch_transcript {job_id} returned {len(raw)} bytes")
+        except Exception as e:
+            self._log(f"fetch_transcript {job_id} failed: {e}", "error")
+            await self.sio.emit("transcript_response", {
+                "type": "transcript_response",
+                "job_id": job_id,
+                "success": False,
+                "error": str(e),
+            })
 
     async def _handle_health_check(self, data: Dict[str, Any]) -> None:
         """
