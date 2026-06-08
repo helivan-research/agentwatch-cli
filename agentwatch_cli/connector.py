@@ -395,13 +395,18 @@ class MoltbotConnector:
             raise Exception("No user message in job")
 
         args = shlex.split(self.config.command)
-        working_dir = self.config.working_dir
+        # Resolve where to run: a pinned session must plan in ITS OWN project dir (that's
+        # where --resume finds it, and its real environment); else the configured
+        # working_dir; else a throwaway temp dir.
+        plan_cwd = self._session_cwd(session_id)
+        if not plan_cwd and self.config.working_dir:
+            plan_cwd = os.path.abspath(os.path.expanduser(self.config.working_dir))
 
-        if working_dir:
+        if plan_cwd:
             # Plan jobs are serialized (one heavy claude at a time) + the fork snapshot/cleanup
             # must not race; the retry-fresh happens AFTER releasing (the lock isn't reentrant).
             async with self._plan_lock:
-                stdout, stderr = await self._exec_plan_job(args, prompt, working_dir, session_mode, session_id)
+                stdout, stderr = await self._exec_plan_job(args, prompt, plan_cwd, session_mode, session_id)
         else:
             workdir = tempfile.mkdtemp(prefix="agentwatch-job-")
             # claude writes a session transcript under a fresh project-slug dir keyed off
@@ -420,10 +425,10 @@ class MoltbotConnector:
         text = stdout.decode(errors="replace").strip()
         if not text:
             err = stderr.decode(errors="replace").strip()
-            # --continue/--resume fails when no such session exists → retry once, fresh.
-            if working_dir and (session_mode or "continue") in ("continue", "resume"):
-                self._log(f"plan run had no session ({err[:120]}) — retrying fresh", "warn")
-                return await self._run_command(messages, session_mode="fresh")
+            # --continue/--resume produced nothing → retry once, fresh (same cwd).
+            if plan_cwd and (session_mode or "continue") in ("continue", "resume"):
+                self._log(f"plan run had no output ({err[:120]}) — retrying fresh", "warn")
+                return await self._run_command(messages, session_mode="fresh", session_id=session_id)
             raise Exception(f"command produced no output{': ' + err if err else ''}")
         return text
 
@@ -445,9 +450,9 @@ class MoltbotConnector:
                 pass
             raise Exception(f"command timed out after {timeout}s")
 
-    async def _exec_plan_job(self, args, prompt, working_dir, session_mode, session_id):
+    async def _exec_plan_job(self, args, prompt, cwd, session_mode, session_id):
         """Run a plan job in the real project dir (claude → read-only + forked + cleaned up)."""
-        workdir = os.path.abspath(os.path.expanduser(working_dir))
+        workdir = os.path.abspath(os.path.expanduser(cwd))
         # Grounded planning (reading a real repo) is slower than answering in an empty dir.
         timeout = max(self.config.command_timeout, 300)
         fork_before = None
@@ -557,6 +562,34 @@ class MoltbotConnector:
         """The Claude Code transcript root on this machine (override via env for tests)."""
         override = os.environ.get("CLAUDE_PROJECTS_DIR")
         return Path(override) if override else self._claude_config_root() / "projects"
+
+    def _session_cwd(self, session_id: Optional[str]) -> Optional[str]:
+        """The project directory a session actually ran in (read from its transcript's
+        `cwd`). `claude --resume <id>` is scoped to a project, so we must run it from the
+        session's own cwd — and that's also the agent's true environment for it."""
+        if not session_id:
+            return None
+        matches = glob.glob(str(self._claude_projects_dir() / "*" / f"{session_id}.jsonl"))
+        if not matches:
+            return None
+        try:
+            with open(matches[0], encoding="utf-8") as f:
+                for i, line in enumerate(f):
+                    if i > 50:
+                        break
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        o = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    cwd = o.get("cwd")
+                    if cwd:
+                        return cwd
+        except OSError:
+            return None
+        return None
 
     # Cap how many recent sessions we title+return, so listing stays fast (and within the
     # cloud's request timeout) even with hundreds of sessions across many projects.
