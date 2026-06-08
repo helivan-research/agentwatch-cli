@@ -562,6 +562,10 @@ class MoltbotConnector:
     # cloud's request timeout) even with hundreds of sessions across many projects.
     _MAX_SESSIONS = 50
 
+    # Cap the transcript tail we ship over the socket. Base64 (~1.33x) must stay comfortably
+    # under the gateway's maxHttpBufferSize (8 MB); steering only uses recent context anyway.
+    _MAX_TRANSCRIPT_BYTES = 4 * 1024 * 1024
+
     @staticmethod
     def _session_title(path: str) -> str:
         """Best-effort title for a transcript: the ai-title line, else first user message.
@@ -653,15 +657,30 @@ class MoltbotConnector:
             matches = glob.glob(str(base / "*" / f"{session_id}.jsonl"))
             if not matches:
                 raise FileNotFoundError(f"Session not found: {session_id}")
-            raw = Path(matches[0]).read_bytes()
+            # Transcripts can be tens of MB; a base64 blob that large blows the socket
+            # frame limit and disconnects the connector. Steering only uses the recent
+            # context, so send just the TAIL (bounded) — aligned to a line boundary.
+            path = matches[0]
+            size = os.path.getsize(path)
+            with open(path, "rb") as f:
+                if size > self._MAX_TRANSCRIPT_BYTES:
+                    f.seek(size - self._MAX_TRANSCRIPT_BYTES)
+                    raw = f.read()
+                    nl = raw.find(b"\n")
+                    if nl != -1:
+                        raw = raw[nl + 1:]  # drop the partial first line
+                else:
+                    raw = f.read()
             await self.sio.emit("transcript_response", {
                 "type": "transcript_response",
                 "job_id": job_id,
                 "success": True,
                 "data_b64": base64.b64encode(raw).decode("ascii"),
                 "size_bytes": len(raw),
+                "truncated": size > self._MAX_TRANSCRIPT_BYTES,
             })
-            self._log(f"fetch_transcript {job_id} returned {len(raw)} bytes")
+            self._log(f"fetch_transcript {job_id} returned {len(raw)}/{size} bytes "
+                      f"(truncated={size > self._MAX_TRANSCRIPT_BYTES})")
         except Exception as e:
             self._log(f"fetch_transcript {job_id} failed: {e}", "error")
             await self.sio.emit("transcript_response", {
