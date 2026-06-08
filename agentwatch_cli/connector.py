@@ -72,6 +72,11 @@ class MoltbotConnector:
         self.heartbeat_interval = 30  # seconds
         self.heartbeat_task: Optional[asyncio.Task] = None
 
+        # Serializes plan jobs (working_dir + claude mode): a watch fans out one job per
+        # task concurrently, but we don't want N heavy `claude` instances at once on the
+        # user's machine, and serial runs keep fork snapshot/cleanup race-free.
+        self._plan_lock = asyncio.Lock()
+
         # Local-gateway health (reported to the cloud via heartbeat, distinct
         # from the cloud Socket.IO link). None = unknown / not yet probed.
         self._gateway_healthy: Optional[bool] = None
@@ -391,45 +396,18 @@ class MoltbotConnector:
 
         args = shlex.split(self.config.command)
         working_dir = self.config.working_dir
-        # Grounded planning (reading a real repo) is slower than answering in an empty dir.
-        timeout = max(self.config.command_timeout, 300) if working_dir else self.config.command_timeout
-        temp_dir = None
-        fork_before = None
 
         if working_dir:
-            workdir = os.path.abspath(os.path.expanduser(working_dir))
-            is_claude = bool(args) and os.path.basename(args[0]) == "claude"
-            if is_claude:
-                args = self._build_claude_plan_args(args, session_mode, session_id)
-                fork_before = self._snapshot_sessions(workdir)
+            # Plan jobs are serialized (one heavy claude at a time) + the fork snapshot/cleanup
+            # must not race; the retry-fresh happens AFTER releasing (the lock isn't reentrant).
+            async with self._plan_lock:
+                stdout, stderr = await self._exec_plan_job(args, prompt, working_dir, session_mode, session_id)
         else:
             workdir = tempfile.mkdtemp(prefix="agentwatch-job-")
-            temp_dir = workdir
-
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *args,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=workdir,
-            )
             try:
-                stdout, stderr = await asyncio.wait_for(
-                    proc.communicate(input=prompt.encode()),
-                    timeout=timeout,
-                )
-            except asyncio.TimeoutError:
-                try:
-                    proc.kill()
-                except ProcessLookupError:
-                    pass
-                raise Exception(f"command timed out after {timeout}s")
-        finally:
-            if temp_dir:
-                shutil.rmtree(temp_dir, ignore_errors=True)
-            if fork_before is not None:
-                self._cleanup_new_sessions(workdir, fork_before)
+                stdout, stderr = await self._exec(args, prompt, workdir, self.config.command_timeout)
+            finally:
+                shutil.rmtree(workdir, ignore_errors=True)
 
         text = stdout.decode(errors="replace").strip()
         if not text:
@@ -440,6 +418,39 @@ class MoltbotConnector:
                 return await self._run_command(messages, session_mode="fresh")
             raise Exception(f"command produced no output{': ' + err if err else ''}")
         return text
+
+    async def _exec(self, args, prompt, workdir, timeout):
+        """Spawn the command in `workdir`, feed the prompt on stdin, return (stdout, stderr)."""
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=workdir,
+        )
+        try:
+            return await asyncio.wait_for(proc.communicate(input=prompt.encode()), timeout=timeout)
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            raise Exception(f"command timed out after {timeout}s")
+
+    async def _exec_plan_job(self, args, prompt, working_dir, session_mode, session_id):
+        """Run a plan job in the real project dir (claude → read-only + forked + cleaned up)."""
+        workdir = os.path.abspath(os.path.expanduser(working_dir))
+        # Grounded planning (reading a real repo) is slower than answering in an empty dir.
+        timeout = max(self.config.command_timeout, 300)
+        fork_before = None
+        if args and os.path.basename(args[0]) == "claude":
+            args = self._build_claude_plan_args(args, session_mode, session_id)
+            fork_before = self._snapshot_sessions(workdir)
+        try:
+            return await self._exec(args, prompt, workdir, timeout)
+        finally:
+            if fork_before is not None:
+                self._cleanup_new_sessions(workdir, fork_before)
 
     async def _handle_job(self, data: Dict[str, Any]) -> None:
         """
