@@ -404,10 +404,18 @@ class MoltbotConnector:
                 stdout, stderr = await self._exec_plan_job(args, prompt, working_dir, session_mode, session_id)
         else:
             workdir = tempfile.mkdtemp(prefix="agentwatch-job-")
+            # claude writes a session transcript under a fresh project-slug dir keyed off
+            # this throwaway cwd; snapshot the projects tree so we can delete it afterward
+            # (otherwise every monitoring job leaks a session).
+            proj = self._claude_projects_dir()
+            dirs_before = set(os.listdir(proj)) if proj.is_dir() else set()
             try:
                 stdout, stderr = await self._exec(args, prompt, workdir, self.config.command_timeout)
             finally:
                 shutil.rmtree(workdir, ignore_errors=True)
+                if proj.is_dir():
+                    for d in set(os.listdir(proj)) - dirs_before:
+                        shutil.rmtree(proj / d, ignore_errors=True)
 
         text = stdout.decode(errors="replace").strip()
         if not text:
