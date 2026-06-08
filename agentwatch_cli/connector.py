@@ -450,17 +450,54 @@ class MoltbotConnector:
                 pass
             raise Exception(f"command timed out after {timeout}s")
 
+    @staticmethod
+    def _extract_plan(paths) -> Optional[str]:
+        """Pull the plan out of a plan-mode run's transcript: the agent emits it via the
+        ExitPlanMode tool call (stdout is only a meta-summary, e.g. "written to the plan
+        file"). Returns the last ExitPlanMode plan found across the given session files."""
+        latest = None
+        for path in paths:
+            try:
+                with open(path, encoding="utf-8") as f:
+                    for line in f:
+                        try:
+                            o = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        content = (o.get("message") or {}).get("content")
+                        if not isinstance(content, list):
+                            continue
+                        for b in content:
+                            if (isinstance(b, dict) and b.get("type") == "tool_use"
+                                    and b.get("name") == "ExitPlanMode"):
+                                plan = (b.get("input") or {}).get("plan")
+                                if plan:
+                                    latest = plan
+            except OSError:
+                continue
+        return latest
+
     async def _exec_plan_job(self, args, prompt, cwd, session_mode, session_id):
-        """Run a plan job in the real project dir (claude → read-only + forked + cleaned up)."""
+        """Run a plan job in the real project dir (claude → read-only + forked + cleaned up).
+
+        Plan mode writes the real plan via ExitPlanMode, so we recover it from the run's
+        transcript rather than stdout, then delete the throwaway session."""
         workdir = os.path.abspath(os.path.expanduser(cwd))
         # Grounded planning (reading a real repo) is slower than answering in an empty dir.
         timeout = max(self.config.command_timeout, 300)
         fork_before = None
-        if args and os.path.basename(args[0]) == "claude":
+        is_claude = bool(args) and os.path.basename(args[0]) == "claude"
+        if is_claude:
             args = self._build_claude_plan_args(args, session_mode, session_id)
             fork_before = self._snapshot_sessions(workdir)
         try:
-            return await self._exec(args, prompt, workdir, timeout)
+            stdout, stderr = await self._exec(args, prompt, workdir, timeout)
+            if fork_before is not None:
+                new_sessions = [p for p in self._snapshot_sessions(workdir) if p not in fork_before]
+                plan = self._extract_plan(new_sessions)
+                if plan:
+                    stdout = plan.encode("utf-8")  # the real plan, not stdout's meta-summary
+            return stdout, stderr
         finally:
             if fork_before is not None:
                 self._cleanup_new_sessions(workdir, fork_before)
