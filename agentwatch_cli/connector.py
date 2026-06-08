@@ -550,13 +550,20 @@ class MoltbotConnector:
         override = os.environ.get("CLAUDE_PROJECTS_DIR")
         return Path(override) if override else self._claude_config_root() / "projects"
 
+    # Cap how many recent sessions we title+return, so listing stays fast (and within the
+    # cloud's request timeout) even with hundreds of sessions across many projects.
+    _MAX_SESSIONS = 50
+
     @staticmethod
     def _session_title(path: str) -> str:
-        """Best-effort title for a transcript: the ai-title line, else first user message."""
+        """Best-effort title for a transcript: the ai-title line, else first user message.
+        Reads only the head of the file (titles/first-user appear early) so it's cheap."""
         first_user = None
         try:
             with open(path, encoding="utf-8") as f:
-                for line in f:
+                for i, line in enumerate(f):
+                    if i > 200:  # bound the read for huge transcripts
+                        break
                     line = line.strip()
                     if not line:
                         continue
@@ -568,7 +575,8 @@ class MoltbotConnector:
                         return str(o["aiTitle"])[:120]
                     if first_user is None and o.get("type") == "user":
                         msg = (o.get("message") or {}).get("content")
-                        if isinstance(msg, str) and msg.strip():
+                        # Skip local-command / harness artifacts (not real prompts).
+                        if isinstance(msg, str) and msg.strip() and not msg.lstrip().startswith("<"):
                             first_user = msg.strip()[:120]
         except OSError:
             return "(untitled session)"
@@ -584,21 +592,27 @@ class MoltbotConnector:
         try:
             base = self._claude_projects_dir()
             self._log(f"list_sessions scanning {base} (exists={base.exists()})")
-            sessions = []
+            # Stat everything first (cheap), keep only the most-recent N, THEN read titles —
+            # titling every session up-front is what made this time out.
+            stats = []
             for path in glob.glob(str(base / "*" / "*.jsonl")):
                 try:
                     st = os.stat(path)
                 except OSError:
                     continue
-                sessions.append({
+                stats.append((path, st.st_mtime, st.st_size))
+            stats.sort(key=lambda x: x[1], reverse=True)
+            sessions = [
+                {
                     "session_id": Path(path).stem,
                     "title": self._session_title(path),
-                    "mtime": int(st.st_mtime * 1000),
-                    "size_bytes": st.st_size,
+                    "mtime": int(mtime * 1000),
+                    "size_bytes": size,
                     "cwd": os.path.basename(os.path.dirname(path)),
-                })
-            sessions.sort(key=lambda s: s["mtime"], reverse=True)
-            self._log(f"list_sessions {job_id} found {len(sessions)} sessions in {base}")
+                }
+                for path, mtime, size in stats[: self._MAX_SESSIONS]
+            ]
+            self._log(f"list_sessions {job_id} found {len(stats)} sessions, returning {len(sessions)}")
             await self.sio.emit("sessions_response", {
                 "type": "sessions_response",
                 "job_id": job_id,
